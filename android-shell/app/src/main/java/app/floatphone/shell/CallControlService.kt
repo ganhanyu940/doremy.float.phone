@@ -43,6 +43,9 @@ class CallControlService : AccessibilityService() {
                 if (pkg.isEmpty()) return
                 // 只上报前台包名，供角色感知上下文；浮窗可见性由系统层级保证，无需重复处理。
                 ShellBus.dispatchOverlayEvent("foregroundApp", JSONObject().put("package", pkg))
+                // 锁机浮层靠这个判断「现在这一屏要不要盖」：整机锁要盖住除豁免外的
+                // 一切，应用锁只盖指定那几个。没有这条上报，原生就不知道用户切到了哪个 App。
+                LockdownService.onForegroundApp(pkg)
             }
         }
     }

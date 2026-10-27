@@ -8,6 +8,8 @@ import { CloudBackupScheduler } from "@/components/cloud-backup-scheduler";
 import { RealityBridgeScheduler } from "@/components/reality-bridge-scheduler";
 import { WidgetScheduler } from "@/components/widget/widget-scheduler";
 import { CheckInScheduler } from "@/components/screenshot/checkin-scheduler";
+import { LockdownOverlay } from "@/components/lockdown/lockdown-overlay";
+import { LockdownNativeWatcher } from "@/components/lockdown/lockdown-native-watcher";
 import { MediaMaintenanceScheduler } from "@/components/media-maintenance-scheduler";
 import { ShellPushRegistrar } from "@/components/shell-push-registrar";
 import { DesktopShell } from "./desktop-shell";
@@ -327,6 +329,11 @@ export function MainApp() {
             {/* 查岗轮询 + 主动截屏接收端。必须挂在桌面壳这种「一直在跑」的地方：
                 角色查岗时用户多半正在别的 App 里，设置页根本没开着。 */}
             <CheckInScheduler />
+            {/* 锁机：原生浮层上点「我记住了」、或者到点后原生回收，都要回传到这里结算；
+                同时负责把「到点该解除」的判断推给原生（网页被冻结时靠原生的绝对时间兜底） */}
+            <LockdownNativeWatcher />
+            {/* 锁机全屏层：盖在整台小手机上，直到倒计时走完或用户点确认 */}
+            <LockdownOverlay />
             <MediaMaintenanceScheduler />
             {/* 壳推送订阅的兜底注册：壳原生那次失败是静默的，这里可验证地补一次 */}
             <ShellPushRegistrar />

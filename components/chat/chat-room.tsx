@@ -63,6 +63,7 @@ import { approveMemoryWriteRequest } from "@/lib/tool-executor";
 import type { MemoryWriteRequest, ToolResult } from "@/lib/tool-executor";
 import { formatChatUiTime } from "@/lib/chat-time";
 import { parseActionTags } from "@/lib/action-parser";
+import { runLockdownFromText, stripLockdownTags } from "@/lib/lockdown-engine";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
 import { creditWalletBalance, payWithWalletBalance } from "@/lib/wallet-storage";
 import { loadDeliveredShoppingGifts, type ShoppingGiftCandidate } from "@/lib/shopping-gift-utils";
@@ -2915,7 +2916,17 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             ? getLatestStateValues(session.id)
             : getLatestCharacterStateValues(session.contactId);
 
-        const { parts: rawParts, stateValues, freshStateValues, statusPanel, innerMonologue, characterRemarkForUser } = parseAIResponse(aiResponseText, previousState);
+        // 锁机标签：先落地（它要盖住整个界面，晚一步用户就还在刷），
+        // 再把标签从可见文本里摘掉——它走的是引擎直接扫原文，不经过结构化动作解析。
+        if (!session.isGroup) {
+            runLockdownFromText({
+                characterId: session.contactId,
+                characterName: character?.name || "角色",
+                text: rawResponseText,
+            });
+        }
+
+        const { parts: rawParts, stateValues, freshStateValues, statusPanel, innerMonologue, characterRemarkForUser } = parseAIResponse(stripLockdownTags(aiResponseText), previousState);
         if (!session.isGroup && characterRemarkForUser) {
             const normalizedRemark = characterRemarkForUser.replace(/[\r\n]/g, " ").trim().slice(0, 20);
             if (normalizedRemark) {

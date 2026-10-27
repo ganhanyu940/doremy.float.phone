@@ -19,6 +19,8 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import org.json.JSONArray
+import org.json.JSONObject
 import android.util.Base64
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -55,7 +57,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         val SITE_URL: String = BuildConfig.SITE_URL
-        const val VERSION = "1.0.10"
+        /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
+        const val VERSION = "1.0.13"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -1140,6 +1143,67 @@ class MainActivity : AppCompatActivity() {
         fun stopCheckIn() {
             CheckInService.stop(this@MainActivity)
         }
+
+        // ── 锁机（角色把手机收走）────
+        // 网页负责判断锁多久、锁哪些应用；壳只负责把它画出来并按时收掉。
+        // 参数一律是 JSON 字符串（与设备动作桥同一套路：@JavascriptInterface 对复杂
+        // 类型的支持有限，字符串最稳，也让失败原因能带着原因回去）。
+
+        /**
+         * 预热锁机服务（App 在前台时调用，启动/切回前台各一次）。
+         *
+         * 为什么必须先预热：锁机常常是「用户正在别的 App 里」时由角色触发的，
+         * 而 Android 12+ 禁止从后台启动前台服务——那一刻再起服务会被系统拒绝，
+         * 表现成「角色说锁了，实际什么都没盖住」。先在前台把服务暖好，触发时只是
+         * 显示一个已经存在的浮层。返回 false 表示没有浮窗权限。
+         */
+        @JavascriptInterface
+        fun prepareLockdown(): Boolean = LockdownService.prepare(this@MainActivity)
+
+        /**
+         * 下发一次锁定。返回 true 表示已受理；false 多半是没有浮窗权限——
+         * 页面据此提示「锁真机需要先授权」，而不是默默什么都没发生。
+         */
+        @JavascriptInterface
+        fun startLockdown(json: String): Boolean = runCatching {
+            val payload = JSONObject(json)
+            if (!Settings.canDrawOverlays(this@MainActivity)) return@runCatching false
+            LockdownService.apply(this@MainActivity, payload)
+            true
+        }.getOrDefault(false)
+
+        /** 更新内容（改了留言、时长收紧）；不会重建浮层。 */
+        @JavascriptInterface
+        fun updateLockdown(json: String) {
+            runCatching { LockdownService.apply(this@MainActivity, JSONObject(json)) }
+        }
+
+        /** 收掉锁定浮层与服务。用户手动解除、到点结算后都会调。 */
+        @JavascriptInterface
+        fun stopLockdown() {
+            LockdownService.stop(this@MainActivity)
+        }
+
+        /**
+         * 已安装且可启动的应用清单（JSON 数组 [{package,label}]，按 label 排序）。
+         * 「永远不锁的应用」选择器用它，用户不必手动敲应用名。
+         */
+        @JavascriptInterface
+        fun listInstalledApps(): String = runCatching {
+            val pm = packageManager
+            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val items = pm.queryIntentActivities(launcherIntent, 0)
+                .mapNotNull { info ->
+                    val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+                    if (pkg == packageName) return@mapNotNull null
+                    JSONObject()
+                        .put("package", pkg)
+                        .put("label", info.loadLabel(pm).toString())
+                }
+                .distinctBy { it.optString("package") }
+                .sortedBy { it.optString("label") }
+            JSONArray(items).toString()
+        }.getOrDefault("[]")
 
         /**
          * 读走并清空「通知栏直接回复」的待发队列（JSON 数组字符串）。

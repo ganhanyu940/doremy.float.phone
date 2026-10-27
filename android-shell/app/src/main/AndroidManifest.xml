@@ -190,6 +190,14 @@
             android:exported="false"
             android:foregroundServiceType="specialUse" />
 
+        <!-- 锁机浮层：角色把手机收走时盖住真机（见 LockdownService 头部的边界说明）。
+             用 specialUse：它不做媒体播放，只是一个用户看得见、随时能自己解除的浮层。
+             需要 SYSTEM_ALERT_WINDOW（浮窗权限）与无障碍（判断当前在哪个 App）。 -->
+        <service
+            android:name=".LockdownService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+
         <!-- 媒体控制：持有「通知使用权」后才有资格读活跃媒体会话、直接控制播放。
              它**不读任何通知内容**（onNotificationPosted 刻意不重写），存在的唯一
              目的是让 MediaSessionManager 认这个调用方。 -->

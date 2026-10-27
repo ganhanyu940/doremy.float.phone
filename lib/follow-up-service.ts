@@ -37,6 +37,9 @@ import { isKnownStickerLabel } from "./sticker-data";
 import { loadCharacters } from "./character-storage";
 import { bgDelay, bgSetInterval, bgSetTimeout } from "./bg-timer";
 import { dispatchChatMessageNotice } from "./chat-notification-events";
+import { runLockdownFromText, stripLockdownTags } from "./lockdown-engine";
+import { formatLockdownDuration } from "./lockdown-storage";
+import { sendBrowserNotification } from "./browser-notification";
 import { settleShoppingPaymentRequest } from "./shopping-payment-request";
 import {
     createPendingChatGeneratedImageData,
@@ -1014,7 +1017,30 @@ export async function parseAndSaveResponse(
     const sess = sessions.find(s => s.id === sessionId);
     const previousState = sess && !sess.isGroup ? getLatestCharacterStateValues(sess.contactId) : [];
 
-    const { parts, stateValues, freshStateValues, statusPanel, innerMonologue } = parseAIResponse(rawText, previousState);
+    // 锁机标签：后台生成（追问/定时唤醒/离线回端）里也要能生效——用户多半正是
+    // 在别的 App 里被「提醒睡觉」的时候，聊天室根本没开着。
+    // 单聊才认；群聊里好几个人发锁机标签，说不清是谁在管你。
+    if (sess && !sess.isGroup) {
+        try {
+            const applied = runLockdownFromText({
+                characterId: sess.contactId,
+                characterName: resolveFollowUpSenderName(sessionId),
+                text: rawResponseText,
+            });
+            if (applied) {
+                sendBrowserNotification(applied.characterName, {
+                    body: applied.unlockMode === "timer"
+                        ? `手机被收走了，${formatLockdownDuration(applied.durationMinutes)}后还你`
+                        : "手机被收走了，要你亲手确认才放行",
+                });
+            }
+        } catch (error) {
+            console.warn("[FollowUp] lockdown parse failed:", error);
+        }
+    }
+
+    // 标签落地后从可见文本里摘掉，免得原文漏进气泡。
+    const { parts, stateValues, freshStateValues, statusPanel, innerMonologue } = parseAIResponse(stripLockdownTags(rawText), previousState);
 
     // 自定义状态栏渲染戳：追发/屏幕速聊/离线回传落库的消息此前从不盖
     // statusRegionMode，custom 模式下 [状态栏] 原文被当 markdown 渲染成一坨

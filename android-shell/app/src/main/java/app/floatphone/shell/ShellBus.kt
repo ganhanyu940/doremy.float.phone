@@ -38,4 +38,18 @@ object ShellBus {
         val literal = JSONObject.quote(detail.toString())
         evalJs("window.dispatchEvent(new CustomEvent('shell-call-overlay',{detail:JSON.parse($literal)}))")
     }
+
+    /**
+     * 向网页派发一个锁机事件（网页侧监听 'shell-lockdown'）。
+     *
+     * 与通话浮窗事件分开走：锁机要处理的是「用户点了确认/锁定结束了」这种生命周期，
+     * 和通话的 restore/hangup/tick 语义完全不同，混在一个事件里会让订阅方疯狂分支。
+     *
+     * @param action unlocked（用户在浮层点了确认/自己解除）/ stopped（到点或被回收）
+     */
+    fun dispatchLockdownEvent(action: String, payload: JSONObject = JSONObject()) {
+        val detail = JSONObject(payload.toString()).put("action", action)
+        val literal = JSONObject.quote(detail.toString())
+        evalJs("window.dispatchEvent(new CustomEvent('shell-lockdown',{detail:JSON.parse($literal)}))")
+    }
 }

@@ -5,6 +5,7 @@ import { maybeAppendShortcutCapability, maybeAppendPerceptionStatus } from "./of
 import { maybeBuildStatusInjection } from "./perception/describe";
 import { loadCharacters } from "./character-storage";
 import { buildScreenEffectPromptHint } from "./chat-screen-effects";
+import { buildLockdownPromptHint } from "./lockdown-engine";
 import { emitChatPluginEvent, runChatPluginTransform } from "./chat-plugin-hooks";
 import { buildChatPluginPromptFragments } from "./chat-plugin-storage";
 import type { LlmRequestPayload } from "./chat-plugin-types";
@@ -2003,6 +2004,15 @@ export async function buildChatPromptMessages(
                 "新备注不超过20个字；控制标记不会展示给用户。不要用这个标记改动用户给你的备注。",
                 ].join("\n"),
             });
+        }
+    }
+    // ── 锁机能力（角色把手机收走）──
+    // 只对私聊注入：群聊里好几个人发锁机标签，说不清是谁在管你。
+    // 用户在「设置 → 锁机」关掉总开关后这段自动消失。
+    if (!session.isGroup) {
+        const lockdownHint = buildLockdownPromptHint();
+        if (lockdownHint) {
+            llmMessages.push({ role: "system", content: lockdownHint });
         }
     }
     if (avatarChangeIntent) {
