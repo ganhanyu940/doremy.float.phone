@@ -39,12 +39,14 @@ import { CheckPhoneApp } from "@/components/checkphone/checkphone-app";
 import { ShoppingApp } from "@/components/shopping/shopping-app";
 import { GameHubApp } from "@/components/game/game-hub-app";
 import { MixologyApp } from "@/components/mixology/mixology-app";
+import { ScreenTimeApp } from "@/components/screen-time-app";
 import InterviewMagazineApp from "@/components/interview/interview-magazine-app";
 import { CoCreateApp } from "@/components/cocreate/cocreate-app";
 import { AppMarketApp } from "@/components/app-market/app-market-app";
 import { CustomAppRunner } from "@/components/app-market/custom-app-runner";
 import { CustomAppForegroundBoundary } from "@/components/app-market/custom-app-failure";
 import { hydrateKvDb, kvGet, kvSet, kvRemove, kvKeysWithPrefix } from "@/lib/kv-db";
+import { resolveAppUsageIdentity, startAppUsageSession, type AppUsageSession } from "@/lib/app-usage-storage";
 import { deleteDatabase } from "@/lib/data-management/idb";
 import { hydrateStoryStorage } from "@/lib/story-storage";
 import { hydrateMomentsStorage } from "@/lib/moments-storage";
@@ -1218,6 +1220,26 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   const [draftTheme, setDraftTheme] = useState<ThemeProfile>(() => initialThemeProfile ?? readInitialThemeProfile());
   useEffect(() => {
     activeAppRef.current = activeApp;
+  }, [activeApp]);
+
+  // ── 屏幕时间：给当前前台 APP 计时 ──
+  // 一次「打开」= 一个会话，activeApp 变化（切 APP / 返回桌面）或桌面卸载时结算上一段。
+  // 展示名从 customApps 里取（自定义 APP 改名后统计跟着更新），所以用 ref 读最新值、
+  // 不把 customApps 放进依赖——否则装/卸一个 APP 会把当前会话打断成两段。
+  const usageCustomAppsRef = useRef<InstalledCustomApp[]>(customApps);
+  useEffect(() => {
+    usageCustomAppsRef.current = customApps;
+  }, [customApps]);
+  const usageSessionRef = useRef<AppUsageSession | null>(null);
+  useEffect(() => {
+    usageSessionRef.current?.dispose();
+    usageSessionRef.current = null;
+    if (!activeApp || isFolderIconId(activeApp)) return;
+    usageSessionRef.current = startAppUsageSession(resolveAppUsageIdentity(activeApp, usageCustomAppsRef.current));
+    return () => {
+      usageSessionRef.current?.dispose();
+      usageSessionRef.current = null;
+    };
   }, [activeApp]);
   // Listen for theme CSS updates from 小卷
   useEffect(() => {
@@ -4273,6 +4295,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
 
     if (activeApp === "mixology") {
       return <MixologyApp onClose={() => setActiveApp(null)} />;
+    }
+
+    if (activeApp === "screentime") {
+      return <ScreenTimeApp onClose={() => setActiveApp(null)} customApps={customApps} />;
     }
 
     if (activeApp === "appmarket") {
