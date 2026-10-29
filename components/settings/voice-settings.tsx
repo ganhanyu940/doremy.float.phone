@@ -9,6 +9,7 @@ import { synthesizeSpeech } from "@/lib/tts-service";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { Toggle, Input } from "@/components/ui/form";
 import { Alert } from "@/components/ui/feedback";
+import { MicProbePanel } from "./mic-probe-panel";
 
 const SUPPORTED_VOICE_PROVIDERS = new Set(["Minimax", "OpenAI"]);
 const MINIMAX_BASE_URL_OPTIONS = [
@@ -566,6 +567,9 @@ export function VoiceSettings() {
             <div className="flex items-center">
                 <h2 className="m-0 mx-2 ts-28 font-bold italic leading-none text-black">Voice API</h2>
             </div>
+
+            {/* 麦克风自检：录音出问题时先看这里，别先怀疑自己没给权限 */}
+            <MicProbePanel />
 
             {configs.length === 0 ? (
                 <div className="ui-empty">

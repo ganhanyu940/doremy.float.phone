@@ -63,7 +63,8 @@ class MainActivity : AppCompatActivity() {
     companion object {
         val SITE_URL: String = BuildConfig.SITE_URL
         /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
-        const val VERSION = "1.0.14"
+        /** 1.0.15：麦克风自检探针（getMicProbe/logMicProbe）+ onConsoleMessage 回传 */
+        const val VERSION = "1.0.15"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -89,6 +90,25 @@ class MainActivity : AppCompatActivity() {
 
     /** 网页消息通知的自增 id：同一条消息覆盖同一 id 会让新通知顶掉旧的，故逐条递增。 */
     private var webNotifId = 500
+
+    // ── 麦克风自检探针（1.0.15）───────────────────────────────
+    // 只做观测，不参与任何判断：串里每一行都是「当时发生了什么」的原始记录。
+    // 用途：用户在设置页点一下自检，就能把这串证据截图发出来，不必连电脑看
+    // chrome://inspect。最要紧的一条是 onPermissionRequest —— 它有没有被调用，
+    // 决定了「修壳的授权代码」是解药还是白费功夫。
+    private val micProbeStartAt = System.currentTimeMillis()
+    private val micProbeEvents = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    /** 记一行探针。时间用「启动后 +N 秒」的相对值，避免设备时区/时间设置干扰比对。 */
+    private fun appendMicProbe(text: String) {
+        val elapsed = ((System.currentTimeMillis() - micProbeStartAt) / 1000).toInt()
+        val line = "+${elapsed}s $text"
+        synchronized(micProbeEvents) {
+            micProbeEvents.add(line)
+            // 只留最近 60 条：探针是给人看的，不是日志系统，也不能无限涨内存
+            while (micProbeEvents.size > 60) micProbeEvents.removeAt(0)
+        }
+    }
 
     /** 感知桥：把电量/网络/应用名/步数交给网页（边界说明见 PerceptionBridge）。 */
     private val perception by lazy { PerceptionBridge(this) }
@@ -222,7 +242,13 @@ class MainActivity : AppCompatActivity() {
                 ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
             }
         }
-        if (granted.isEmpty()) request.deny() else request.grant(granted.toTypedArray())
+        if (granted.isEmpty()) {
+            appendMicProbe("系统权限申请后仍无可用资源 → deny")
+            request.deny()
+        } else {
+            appendMicProbe("系统权限到位 → grant：${granted.joinToString("|")}")
+            request.grant(granted.toTypedArray())
+        }
     }
 
     private fun webResourcePermissions(resource: String): List<String> = when (resource) {
@@ -294,6 +320,16 @@ class MainActivity : AppCompatActivity() {
             allowFileAccess = false
             userAgentString = "$userAgentString FloatShell/$VERSION"
         }
+        // 探针：启动时把三个「事后最难补」的事实一次记全。
+        // WebView 提供者尤其关键——国产 ROM 常把系统 WebView 换掉或换版本，
+        // 同一个 APK 在两台机器上 getUserMedia 的表现可以完全不同。
+        appendMicProbe("壳启动 shell=$VERSION sdk=${Build.VERSION.SDK_INT}")
+        runCatching {
+            val pkg = WebView.getCurrentWebViewPackage()
+            appendMicProbe("WebView=${pkg?.packageName ?: "?"} ${pkg?.versionName ?: "?"}")
+        }.onFailure { appendMicProbe("WebView 版本读取失败：${it.message}") }
+        appendMicProbe("RECORD_AUDIO=${if (hasAudioRecordPermission()) "已授权" else "未授权"}")
+
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
 
@@ -327,15 +363,55 @@ class MainActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                // 探针第一行：本回调被调用 = 页面的 getUserMedia 请求确实送到了宿主。
+                // 反过来，用户点了自检而这里没有任何新记录，就说明请求在 WebView 内部
+                // 已被拒（容器层），此时改这一段的授权逻辑没有意义。
+                appendMicProbe(
+                    "onPermissionRequest origin=${request.origin} " +
+                        "resources=${request.resources.joinToString("|")}",
+                )
                 val supported = request.resources.filter { webResourcePermissions(it).isNotEmpty() }
-                if (supported.isEmpty()) { request.deny(); return }
+                if (supported.isEmpty()) {
+                    appendMicProbe("deny：没有可申请的资源")
+                    request.deny()
+                    return
+                }
                 val missing = supported.flatMap { webResourcePermissions(it) }
                     .distinct()
                     .filter { ContextCompat.checkSelfPermission(this@MainActivity, it) != PackageManager.PERMISSION_GRANTED }
-                if (missing.isEmpty()) { request.grant(supported.toTypedArray()); return }
-                if (pendingWebPermissionRequest != null) { request.deny(); return }
+                if (missing.isEmpty()) {
+                    appendMicProbe("grant（系统权限已具备）：${supported.joinToString("|")}")
+                    request.grant(supported.toTypedArray())
+                    return
+                }
+                if (pendingWebPermissionRequest != null) {
+                    appendMicProbe("deny：已有待处理的权限请求")
+                    request.deny()
+                    return
+                }
+                appendMicProbe("申请系统权限：${missing.joinToString("|")}")
                 pendingWebPermissionRequest = request
                 webPermissionLauncher.launch(missing.toTypedArray())
+            }
+
+            // 探针：把页面 console 里的报错带回壳。
+            // getUserMedia 被拒时 WebView 往往只在 console 留一行，页面上什么都没有，
+            // 用户看不到、我们也猜不到。这里只挑相关的和所有非 LOG 级别的，
+            // 避免把整站日志灌进 60 条的环形缓冲。
+            override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage): Boolean {
+                val level = consoleMessage.messageLevel()
+                val text = consoleMessage.message().orEmpty()
+                val interesting = level != android.webkit.ConsoleMessage.MessageLevel.LOG ||
+                    listOf("mediaDevices", "getUserMedia", "NotAllowed", "NotFound", "Permission").any {
+                        text.contains(it, ignoreCase = true)
+                    }
+                if (interesting) {
+                    appendMicProbe(
+                        "console[$level] ${consoleMessage.sourceId()}:${consoleMessage.lineNumber()} " +
+                            text.take(300),
+                    )
+                }
+                return false
             }
 
             override fun onShowFileChooser(
@@ -596,6 +672,42 @@ class MainActivity : AppCompatActivity() {
         /** 实测系统状态栏高度（CSS px）。页面侧兜底轮询用；主要注入路径见 injectStatusBarHeight。 */
         @JavascriptInterface
         fun getStatusBarHeightPx(): Int = statusBarHeightCssPx
+
+        // ── 麦克风自检探针（1.0.15）───────────────────────────
+        // 只读观测：不申请权限、不开麦、不改任何既有行为。
+
+        /**
+         * 一次取回全部探针信息（JSON）：
+         * { version, sdkInt, webViewPackage, hasRecordPermission, events:[...] }
+         *
+         * 老壳没有这个方法——网页侧据此判断「要不要提示升级壳」，而不是静默空白。
+         */
+        @JavascriptInterface
+        fun getMicProbe(): String = runCatching {
+            val events = synchronized(micProbeEvents) { micProbeEvents.toList() }
+            JSONObject().apply {
+                put("version", VERSION)
+                put("sdkInt", Build.VERSION.SDK_INT)
+                put("webViewPackage", runCatching {
+                    WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } ?: ""
+                }.getOrDefault(""))
+                put("hasRecordPermission", hasAudioRecordPermission())
+                put("events", JSONArray(events))
+            }.toString()
+        }.getOrDefault("{}")
+
+        /** 网页侧往同一条探针里记一行（例如 getUserMedia 抛出的错误名与消息）。 */
+        @JavascriptInterface
+        fun logMicProbe(text: String) {
+            appendMicProbe("web: ${text.take(300)}")
+        }
+
+        /** 清空探针：想「重现一次」时从干净状态开始看，避免旧记录混进来。 */
+        @JavascriptInterface
+        fun clearMicProbe() {
+            synchronized(micProbeEvents) { micProbeEvents.clear() }
+            appendMicProbe("探针已清空（shell=$VERSION）")
+        }
 
         // ── 原生录音桥 ────────────────────────────────────────────
         // 全部返回 JSON 字符串（同设备动作桥的约定）：@JavascriptInterface 对复杂

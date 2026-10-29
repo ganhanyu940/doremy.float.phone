@@ -29,8 +29,11 @@ android {
         // 1.0.13：锁机（角色收走手机：真机全屏浮层 + 指定应用封锁，可随时自己解除）。
         // 1.0.14：新增原生录音桥（startNativeRecord/stopNativeRecord），绕开 WebView
         //         getUserMedia 被 ROM 直接拒绝的情况，供自定义 APP 录音兜底。
-        versionCode 13
-        versionName "1.0.14"
+        // 1.0.15：麦克风自检探针。只增加观测、不改任何行为——把
+        //         「onPermissionRequest 到底有没有被回调」这件事变成可读的证据，
+        //         外加 onConsoleMessage 回传页面的 getUserMedia 报错。
+        versionCode 14
+        versionName "1.0.15"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 
