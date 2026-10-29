@@ -13,9 +13,12 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioManager
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
@@ -48,6 +51,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Float 小手机安卓壳：全屏 WebView 直接加载线上站点。
@@ -58,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         val SITE_URL: String = BuildConfig.SITE_URL
         /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
-        const val VERSION = "1.0.13"
+        const val VERSION = "1.0.14"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -551,6 +556,38 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // ── 原生录音（绕开 WebView 麦克风）─────────────────────────
+    // 背景：部分 ROM/WebView 组合下，页面里的 getUserMedia 会被 WebView 直接拒绝，
+    // 系统「行为记录 → 录音」里连一条本应用的调用都看不到——请求根本没到系统层，
+    // 所以再怎么授系统权限也没用，WebChromeClient.onPermissionRequest 也不会被回调。
+    //
+    // 解法是绕开 WebView 自己录：用系统 MediaRecorder 录成 m4a，读成 base64 以
+    // dataUrl 交回网页。网页侧拿到的东西和 getUserMedia 完全一样（dataUrl + mimeType
+    // + size + ms），播放、存媒体库、送云端转写都不用改。
+    //
+    // 选 MPEG_4 + AAC：安卓原生最稳，且 audio/mp4 在 <audio> 与转写接口都能直接用。
+    private val recordPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 授权结果由网页侧用 hasRecordPermission() 复查，这里不替它判断 */ }
+
+    private var nativeRecorder: MediaRecorder? = null
+    private var nativeRecordFile: File? = null
+    private var nativeRecordStartedAt: Long = 0L
+    private var nativeRecordThread: HandlerThread? = null
+
+    /** MediaRecorder 必须在带 Looper 的同一线程上操作，这里用一条专用线程钉住。 */
+    private fun recordHandler(): Handler {
+        val thread = nativeRecordThread
+            ?: HandlerThread("FloatNativeRecord").also { it.start(); nativeRecordThread = it }
+        return Handler(thread.looper)
+    }
+
+    private fun hasAudioRecordPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this@MainActivity,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+
     /** 暴露给网页的原生桥（网页侧可用 window.AndroidShell 特性检测壳环境）。 */
     inner class ShellBridge {
         @JavascriptInterface
@@ -559,6 +596,143 @@ class MainActivity : AppCompatActivity() {
         /** 实测系统状态栏高度（CSS px）。页面侧兜底轮询用；主要注入路径见 injectStatusBarHeight。 */
         @JavascriptInterface
         fun getStatusBarHeightPx(): Int = statusBarHeightCssPx
+
+        // ── 原生录音桥 ────────────────────────────────────────────
+        // 全部返回 JSON 字符串（同设备动作桥的约定）：@JavascriptInterface 对复杂
+        // 返回类型支持有限，字符串最稳，也能把「为什么失败」原样带回去。
+
+        /** 是否已拿到系统录音权限。 */
+        @JavascriptInterface
+        fun hasRecordPermission(): Boolean = hasAudioRecordPermission()
+
+        /** 主动申请一次录音权限（系统弹窗）。结果由调用方稍后复查 hasRecordPermission。 */
+        @JavascriptInterface
+        fun requestRecordPermission(): Boolean {
+            if (hasAudioRecordPermission()) return true
+            runCatching { recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+            return false
+        }
+
+        /**
+         * 开始原生录音。成功返回 {"ok":true}；
+         * 失败返回 {"ok":false,"reason":"no-permission|busy|timeout|<异常信息>"}。
+         */
+        @JavascriptInterface
+        fun startNativeRecord(): String {
+            if (!hasAudioRecordPermission()) return "{\"ok\":false,\"reason\":\"no-permission\"}"
+            if (nativeRecorder != null) return "{\"ok\":false,\"reason\":\"busy\"}"
+
+            val file = File(cacheDir, "native-rec-${System.currentTimeMillis()}.m4a")
+            var error: String? = null
+            val latch = CountDownLatch(1)
+            recordHandler().post {
+                try {
+                    val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        MediaRecorder(this@MainActivity)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        MediaRecorder()
+                    }
+                    recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+                    recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                    // 32kbps 足够人声背诵，55 秒约 220KB，base64 后过桥也不吃力
+                    recorder.setAudioEncodingBitRate(32_000)
+                    recorder.setAudioSamplingRate(44_100)
+                    recorder.setOutputFile(file.absolutePath)
+                    recorder.prepare()
+                    recorder.start()
+                    nativeRecorder = recorder
+                    nativeRecordFile = file
+                    nativeRecordStartedAt = System.currentTimeMillis()
+                } catch (e: Exception) {
+                    error = e.message ?: e.javaClass.simpleName
+                    runCatching { nativeRecorder?.release() }
+                    nativeRecorder = null
+                    nativeRecordFile = null
+                    runCatching { file.delete() }
+                } finally {
+                    latch.countDown()
+                }
+            }
+
+            if (!latch.await(4, TimeUnit.SECONDS)) return "{\"ok\":false,\"reason\":\"timeout\"}"
+            val err = error
+            return if (err == null) {
+                "{\"ok\":true}"
+            } else {
+                "{\"ok\":false,\"reason\":${JSONObject.quote(err)}}"
+            }
+        }
+
+        /**
+         * 停止原生录音并取回音频。
+         * 成功返回 {"ok":true,"dataUrl":"data:audio/mp4;base64,…","mimeType","size","ms"}。
+         */
+        @JavascriptInterface
+        fun stopNativeRecord(): String {
+            val recorder = nativeRecorder ?: return "{\"ok\":false,\"reason\":\"no-active-recording\"}"
+            val file = nativeRecordFile
+            val startedAt = nativeRecordStartedAt
+            var stopError: String? = null
+            val latch = CountDownLatch(1)
+            recordHandler().post {
+                try {
+                    // stop() 在时长过短时会抛 RuntimeException，属于正常失败
+                    recorder.stop()
+                } catch (e: Exception) {
+                    stopError = e.message ?: e.javaClass.simpleName
+                } finally {
+                    runCatching { recorder.reset() }
+                    runCatching { recorder.release() }
+                    nativeRecorder = null
+                    nativeRecordFile = null
+                    latch.countDown()
+                }
+            }
+            latch.await(4, TimeUnit.SECONDS)
+
+            val ms = System.currentTimeMillis() - startedAt
+            if (file == null || !file.exists() || file.length() == 0L) {
+                val reason = stopError ?: "empty"
+                if (file != null) runCatching { file.delete() }
+                return "{\"ok\":false,\"reason\":${JSONObject.quote(reason)}}"
+            }
+            return try {
+                val bytes = file.readBytes()
+                runCatching { file.delete() }
+                val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                JSONObject().apply {
+                    put("ok", true)
+                    put("dataUrl", "data:audio/mp4;base64,$base64")
+                    put("mimeType", "audio/mp4")
+                    put("size", bytes.size)
+                    put("ms", ms)
+                }.toString()
+            } catch (e: Exception) {
+                runCatching { file.delete() }
+                "{\"ok\":false,\"reason\":${JSONObject.quote(e.message ?: "read-failed")}}"
+            }
+        }
+
+        /** 丢弃当前原生录音（不取回音频），用于取消/超时清理。 */
+        @JavascriptInterface
+        fun cancelNativeRecord(): String {
+            val recorder = nativeRecorder
+            val file = nativeRecordFile
+            nativeRecorder = null
+            nativeRecordFile = null
+            if (recorder != null) {
+                recordHandler().post {
+                    runCatching { recorder.stop() }
+                    runCatching { recorder.release() }
+                    file?.let { runCatching { it.delete() } }
+                }
+            } else {
+                file?.let { runCatching { it.delete() } }
+            }
+            return "{\"ok\":true}"
+        }
 
         // ── 感知桥（电量 / 网络 / 应用名）────────────────
         // 只读、零判断、不抛异常。所有「要不要上报」的逻辑在网页侧，
