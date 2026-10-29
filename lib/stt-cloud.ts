@@ -20,6 +20,99 @@ const TRANSCRIBE_TIMEOUT_MS = 60_000;
 // 录音兜底上限：忘记松手/指针事件丢失时自动停，避免无限占用麦克风
 const MAX_RECORDING_MS = 60_000;
 
+/**
+ * 安卓壳的原生录音桥（见 android-shell/.../MainActivity.kt 的 ShellBridge）。
+ * 存在的意义：部分 ROM/WebView 组合会直接拒绝页面的 getUserMedia，请求根本到不了
+ * 系统层（系统「行为记录 → 录音」里查不到本应用），授系统权限也没用。
+ * 实测同一台机 Chrome 浏览器能录、壳内 WebView 不能，所以录音改由壳来做。
+ */
+type NativeRecordBridge = {
+    hasRecordPermission?: () => boolean;
+    requestRecordPermission?: () => boolean;
+    startNativeRecord?: () => string;
+    stopNativeRecord?: () => string;
+    cancelNativeRecord?: () => string;
+};
+
+function nativeRecordBridge(): NativeRecordBridge | null {
+    if (typeof window === "undefined") return null;
+    const bridge = (window as unknown as { AndroidShell?: NativeRecordBridge }).AndroidShell;
+    if (!bridge || typeof bridge.startNativeRecord !== "function") return null;
+    return bridge;
+}
+
+function bridgeParse(raw: unknown): Record<string, unknown> | null {
+    try {
+        const value = JSON.parse(String(raw ?? ""));
+        return value && typeof value === "object" && !Array.isArray(value)
+            ? (value as Record<string, unknown>)
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+/** dataUrl → Blob（原生桥交回的是 base64，转写接口要 Blob/FormData）。 */
+function dataUrlToBlob(dataUrl: string): Blob | null {
+    const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/.exec(dataUrl);
+    if (!match) return null;
+    const mime = match[1] || "audio/mp4";
+    try {
+        if (match[2]) {
+            const binary = atob(match[3]);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return new Blob([bytes], { type: mime });
+        }
+        return new Blob([decodeURIComponent(match[3])], { type: mime });
+    } catch {
+        return null;
+    }
+}
+
+function bridgeReasonText(reason: string): string {
+    if (reason === "no-permission") return "小手机还没有录音权限。";
+    if (reason === "busy") return "麦克风正被占用，等一下再试。";
+    if (reason === "empty") return "没有录到声音（按得太短）。";
+    if (reason === "no-active-recording") return "当前没有正在进行的录音。";
+    return reason;
+}
+
+/** 用壳的原生录音器录一段，接口与 Web MediaRecorder 版本保持一致。 */
+async function startNativeCallRecording(bridge: NativeRecordBridge): Promise<ActiveCallRecording> {
+    if (bridge.hasRecordPermission && !bridge.hasRecordPermission()) {
+        try { bridge.requestRecordPermission?.(); } catch { /* 用户之前拒绝过，可能不弹窗 */ }
+        throw new Error("小手机还没有录音权限，已尝试弹出授权，允许后再按一次。");
+    }
+
+    const startInfo = bridgeParse(bridge.startNativeRecord?.());
+    if (!startInfo || startInfo.ok !== true) {
+        throw new Error(`原生录音启动失败：${bridgeReasonText(String(startInfo?.reason ?? "未知原因"))}`);
+    }
+
+    let finished = false;
+    let cancelled = false;
+
+    return {
+        stop: () => Promise.resolve().then(() => {
+            if (finished) return null;
+            finished = true;
+            const info = bridgeParse(bridge.stopNativeRecord?.());
+            if (!info || info.ok !== true) return null;
+            const dataUrl = typeof info.dataUrl === "string" ? info.dataUrl : "";
+            if (!dataUrl) return null;
+            return dataUrlToBlob(dataUrl);
+        }),
+        cancel: () => {
+            if (finished) return;
+            cancelled = true;
+            finished = true;
+            try { bridge.cancelNativeRecord?.(); } catch { /* 忽略 */ }
+            void cancelled;
+        },
+    };
+}
+
 function toCloudSttConfig(config: VoiceApiConfig | undefined | null): CloudSttConfig | null {
     if (!config || config.provider !== "OpenAI") return null;
     if (!config.apiKey?.trim()) return null;
@@ -51,10 +144,18 @@ export function resolveCloudSttConfig(characterId?: string): CloudSttConfig | nu
     return null;
 }
 
-export function isCallRecordingSupported(): boolean {
+/** 页面侧（Web MediaRecorder）是否存在。注意它只检查 API 存在，不代表真能拿到麦克风。 */
+function hasWebRecorder(): boolean {
     return typeof navigator !== "undefined"
         && !!navigator.mediaDevices?.getUserMedia
         && typeof MediaRecorder !== "undefined";
+}
+
+export function isCallRecordingSupported(): boolean {
+    // 壳里有原生录音桥也算支持：Android WebView 常常拿不到 getUserMedia，
+    // 但壳自己录是通的，不能因为页面没 getUserMedia 就把入口藏掉。
+    if (typeof window !== "undefined" && nativeRecordBridge()) return true;
+    return hasWebRecorder();
 }
 
 export type ActiveCallRecording = {
@@ -65,8 +166,8 @@ export type ActiveCallRecording = {
 };
 
 /** 按下开始录音。resolve 时麦克风已经在录；权限被拒等失败会 reject。 */
-export async function startCallRecording(): Promise<ActiveCallRecording> {
-    if (!isCallRecordingSupported()) throw new Error("当前环境不支持录音");
+async function startWebCallRecording(): Promise<ActiveCallRecording> {
+    if (!hasWebRecorder()) throw new Error("当前环境不支持录音");
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {
         throw new Error("麦克风权限被拒绝或不可用");
@@ -130,6 +231,25 @@ export async function startCallRecording(): Promise<ActiveCallRecording> {
             }
         },
     };
+}
+
+/**
+ * 按下开始录音。resolve 时麦克风已经在录；权限被拒等失败会 reject。
+ *
+ * 两级策略：先走页面自己的 MediaRecorder；拿不到麦克风时退回壳的原生录音。
+ * 后者是 Android WebView 的兜底——有些 ROM/WebView 组合会把页面的 getUserMedia
+ * 直接拒掉，请求连系统层都到不了，授系统权限也没用（实测同机 Chrome 能录、壳内不能）。
+ * 两条路最终都交出 Blob，转写链路完全不用关心音频是哪儿录的。
+ */
+export async function startCallRecording(): Promise<ActiveCallRecording> {
+    try {
+        return await startWebCallRecording();
+    } catch (webError) {
+        const bridge = nativeRecordBridge();
+        if (!bridge) throw webError;
+        console.warn("[CallRecord] 页面录音失败，改用壳原生录音：", webError);
+        return startNativeCallRecording(bridge);
+    }
 }
 
 /** 调 OpenAI 兼容 /audio/transcriptions 把录音转文字。 */
