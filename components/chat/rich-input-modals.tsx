@@ -3,6 +3,25 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { CallSttWarningDialog, hideCallSttWarningPermanently, isCallSttWarningHidden } from "./call-stt-warning-dialog";
 import { isAndroidBrowser } from "./voice-input-platform";
+import {
+    resolveCloudSttConfig,
+    startCallRecording,
+    transcribeAudioBlob,
+    type ActiveCallRecording,
+} from "@/lib/stt-cloud";
+
+/**
+ * 安卓壳是否提供原生录音桥（android-shell 的 ShellBridge.startNativeRecord）。
+ * 有它就不必依赖 WebView 的 getUserMedia——后者在不少 ROM/WebView 组合里
+ * 会被直接在浏览器内部拒掉，请求连系统层都到不了，授系统权限也没用。
+ */
+function hasShellNativeRecorder(): boolean {
+    if (typeof window === "undefined") return false;
+    const bridge = (window as unknown as {
+        AndroidShell?: { startNativeRecord?: () => string; stopNativeRecord?: () => string };
+    }).AndroidShell;
+    return !!bridge && typeof bridge.startNativeRecord === "function";
+}
 
 // ── Photo Input Modal ─────────────────────────────
 
@@ -330,8 +349,13 @@ interface VoiceRecordModalProps {
 }
 
 export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordModalProps) {
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser());
+    // 安卓 WebView 拿不到麦克风是常态（同机 Chrome 能录、壳内不能），但壳有原生录音桥，
+    // 所以安卓不再一律退化成纯文字：有桥就走「原生录音 + 云端识别」，没桥才退回文字。
+    const useShellRecorderRef = useRef(isAndroidBrowser() && hasShellNativeRecorder());
+    const useShellRecorder = useShellRecorderRef.current;
+    const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !useShellRecorder);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
+    const shellRecordingRef = useRef<ActiveCallRecording | null>(null);
     const [state, setState] = useState<"idle" | "recording" | "processing" | "done">("idle");
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
     const [interim, setInterim] = useState("");
@@ -374,6 +398,21 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         setAudioDataUrl(null);
         chunksRef.current = [];
         gotFinalRef.current = false;
+
+        // 安卓壳：录音交给原生桥，识别交给云端 STT（不再依赖浏览器的 Web Speech）
+        if (useShellRecorder) {
+            try {
+                shellRecordingRef.current = await startCallRecording();
+                setState("recording");
+                setInterim(resolveCloudSttConfig(characterId) ? "🎙️ 正在录音…说完点停止" : "🎙️ 正在录音…（未配置语音识别，只能发语音条）");
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                setInterim(message);
+                setState("idle");
+                showSttCompatibilityWarning();
+            }
+            return;
+        }
 
         // Start STT (browser Web Speech API) before opening the mic. Unsupported
         // Android browsers should show the fallback prompt without flashing recording UI.
@@ -429,13 +468,69 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
     }, [androidTextInputOnly, characterId, showSttCompatibilityWarning]);
 
     const stopRecording = () => {
+        if (useShellRecorder) {
+            const active = shellRecordingRef.current;
+            shellRecordingRef.current = null;
+            setState("processing");
+            setInterim("处理中…");
+            void (async () => {
+                let blob: Blob | null = null;
+                try {
+                    blob = active ? await active.stop() : null;
+                } catch {
+                    blob = null;
+                }
+                if (!blob) {
+                    setState("idle");
+                    setInterim("没有录到声音，按久一点再试");
+                    return;
+                }
+                // 先把音频转成 dataURL：即使识别失败或没配识别服务，也能作为语音条直接发出
+                const dataUrl = await new Promise<string | null>(resolve => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = () => resolve(null);
+                    reader.readAsDataURL(blob as Blob);
+                });
+                if (dataUrl) setAudioDataUrl(dataUrl);
+
+                const config = resolveCloudSttConfig(characterId);
+                if (!config) {
+                    setState("idle");
+                    setInterim("录音已就绪，但还没配置语音识别服务，只能发语音条");
+                    return;
+                }
+                try {
+                    const text = await transcribeAudioBlob(blob, config);
+                    if (text) {
+                        setFinalText(text);
+                        setState("done");
+                        setInterim("");
+                    } else {
+                        setState("idle");
+                        setInterim("没有识别出内容，可以直接发语音条");
+                    }
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    setState("idle");
+                    setInterim(`识别失败：${message}`);
+                }
+            })();
+            return;
+        }
         sttRef.current?.stop();
         recorderRef.current?.stop();
         setState("processing");
         setInterim("识别中...");
     };
 
-    useEffect(() => () => { sttRef.current?.abort(); recorderRef.current?.stop(); streamRef.current?.getTracks().forEach(t => t.stop()); }, []);
+    useEffect(() => () => {
+        sttRef.current?.abort();
+        recorderRef.current?.stop();
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        shellRecordingRef.current?.cancel();
+        shellRecordingRef.current = null;
+    }, []);
 
     const switchInputMode = () => {
         if (androidTextInputOnly) {
@@ -444,6 +539,8 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         }
         if (inputMode === "voice") {
             sttRef.current?.abort();
+            shellRecordingRef.current?.cancel();
+            shellRecordingRef.current = null;
             if (recorderRef.current && recorderRef.current.state !== "inactive") {
                 recorderRef.current.stop();
             }
@@ -456,7 +553,12 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         }
     };
 
-    const canSend = inputMode === "text" ? !!manualText.trim() : state === "done" && !!finalText.trim();
+    // 原生录音路径下，只要有录音（语音条）就够了；识别出来的文字是加分项。
+    const canSend = inputMode === "text"
+        ? !!manualText.trim()
+        : useShellRecorder
+            ? (!!finalText.trim() || !!audioDataUrl)
+            : state === "done" && !!finalText.trim();
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -508,6 +610,11 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
                     {state === "done" && (
                         <div className="ts-14 text-[var(--c-text)] text-center px-4 leading-relaxed">{finalText}</div>
                     )}
+                    {useShellRecorder && state === "idle" && audioDataUrl && (
+                        <div className="ts-13 text-[var(--c-icon)] text-center px-4 leading-relaxed">
+                            录音已就绪，点「发送」把它作为语音条发出
+                        </div>
+                    )}
                     {(state === "recording" || state === "processing") && (
                         <span className="ts-13 text-[var(--c-icon)]">{interim || "点击停止录音"}</span>
                     )}
@@ -517,8 +624,9 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
                     <button
                         onClick={() => {
                             if (!canSend) return;
-                            if (inputMode === "text") onSend(manualText.trim());
-                            else onSend(finalText.trim(), audioDataUrl || undefined);
+                            if (inputMode === "text") { onSend(manualText.trim()); return; }
+                            // 只录到音、没识别出文字时也要能发：给气泡一个非空文本兜底
+                            onSend(finalText.trim() || (audioDataUrl ? "（语音）" : ""), audioDataUrl || undefined);
                         }}
                         disabled={!canSend}
                         className="ui-btn ui-btn-success flex-1"
