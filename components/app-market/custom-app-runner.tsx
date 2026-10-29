@@ -2009,10 +2009,10 @@ export function CustomAppRunner({
           title={app.name}
           className="custom-app-runner-frame"
           sandbox="allow-scripts allow-downloads"
-          // allow 必须显式授予 microphone / camera：iframe 默认没有麦克风权限，
-          // 页面里任何 getUserMedia 都会被 Permissions Policy 直接拒绝——连
-          // WebChromeClient.onPermissionRequest 都不会触发，系统「行为记录 → 录音」
-          // 里因此一条调用都看不到，表现为「权限给了、却永远录不上」。
+          /* allow 必须显式授予 microphone/camera：iframe 默认不带麦克风权限，页面里
+             任何 getUserMedia 都会被 Permissions Policy 在浏览器内部直接拒绝，连
+             WebChromeClient.onPermissionRequest 都不会触发——系统「行为记录 → 录音」里
+             因此一条调用都看不到，表现为「系统权限给了、却永远录不上」。 */
           allow="autoplay; microphone; camera"
           onLoad={syncHostedSafeArea}
           srcDoc={srcDoc}

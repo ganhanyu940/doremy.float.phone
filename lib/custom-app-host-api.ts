@@ -1093,7 +1093,7 @@ function recordViaWebAudio(maxMs: number): Promise<Record<string, unknown>> {
       reject(new Error("当前环境不支持录音。"));
       return;
     }
-      if (activeCustomAppRecorder) {
+    if (activeCustomAppRecorder) {
       reject(new Error("已有录音在进行中。"));
       return;
     }
@@ -1263,9 +1263,9 @@ function recordViaNativeShell(bridge: NativeRecordBridge, maxMs: number): Promis
  * 只在「页面录音确实拿不到」时才走兜底，所以其他机型行为完全不变。
  */
 export function recordCustomAppSpeech(record: Record<string, unknown>): Promise<Record<string, unknown>> {
-  // 上限从 60 秒放宽到 10 分钟：背诵整段课文、口述笔记都需要更长。
-  // 32kbps 下 10 分钟约 2.4MB，base64 后约 3.2MB，过桥可用但会有明显延迟，
-  // 所以 APP 侧默认仍给较短时长，需要长录时自己传 maxMs。
+  // 上限从 60 秒放宽到 10 分钟：整段课文背诵、口述笔记都需要更长。
+  // 32kbps 下 10 分钟约 2.4MB，base64 后约 3.2MB，过桥会有明显延迟，
+  // 所以 APP 侧实际取 5 分钟，需要更长的调用方自己传 maxMs。
   const maxMs = Math.max(1000, Math.min(600_000, Number(record.maxMs ?? 20_000) || 20_000));
   return recordViaWebAudio(maxMs).catch(webError => {
     const bridge = nativeRecordBridge();
