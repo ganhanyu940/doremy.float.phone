@@ -26,6 +26,49 @@
   pointer-events: none;
 }
 
+/* 微信式「按住说话」条：占据原输入框的位置，按下录音、上滑取消 */
+.chat-hold-to-talk {
+  flex: 1;
+  min-height: 38px;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid var(--c-input-border, rgba(0, 0, 0, 0.06));
+  background: var(--c-input);
+  color: var(--c-text);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.chat-hold-to-talk:active {
+  transform: scale(0.995);
+}
+
+.chat-hold-to-talk[data-recording] {
+  background: color-mix(in srgb, var(--c-success, #34c759) 18%, var(--c-input));
+  border-color: color-mix(in srgb, var(--c-success, #34c759) 55%, transparent);
+  color: var(--c-success, #34c759);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-hold-to-talk[data-recording][data-cancel] {
+  background: color-mix(in srgb, var(--c-danger, #ff3b30) 18%, var(--c-input));
+  border-color: color-mix(in srgb, var(--c-danger, #ff3b30) 55%, transparent);
+  color: var(--c-danger, #ff3b30);
+}
+
+.chat-hold-to-talk:disabled {
+  opacity: 0.5;
+}
+
 .chat-room-layer {
   z-index: 30;
   background: #fff;

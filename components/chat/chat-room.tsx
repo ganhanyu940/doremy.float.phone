@@ -21,6 +21,12 @@ import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import { sendBrowserNotification } from "@/lib/browser-notification";
 import { dispatchChatMessageNotice } from "@/lib/chat-notification-events";
 import { shouldSendChatInputOnEnter } from "@/lib/chat-input-keyboard";
+import {
+    resolveCloudSttConfig,
+    startCallRecording,
+    transcribeAudioBlob,
+    type ActiveCallRecording,
+} from "@/lib/stt-cloud";
 import { useChatBottomReserve } from "./use-chat-bottom-reserve";
 import ReactMarkdown from "react-markdown";
 import rehypeRaw from "rehype-raw";
@@ -682,6 +688,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onStopGeneration: () => void;
     onTriggerAIResponse: () => void;
 	onSendSticker: (name: string, url?: string) => void;
+    /** 按住说话发出的语音条：text 是识别结果（可能为空），audioDataUrl 是音频 */
+    onSendVoice: (text: string, audioDataUrl?: string) => void;
 }>(function ChatTextInputBar({
     characterName,
     characterId,
@@ -713,13 +721,13 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onStopGeneration,
     onTriggerAIResponse,
     onSendSticker,
+    onSendVoice,
 }, ref) {
     const [inputText, setInputText] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-    // 表情包搜索联想：ESC/失焦置 true 隐藏，输入变化重新开启
-    const [suggestClosed, setSuggestClosed] = useState(false);
-    // 围观群/被禁言：输入与富媒体入口全部锁定，只留线下切换和生成按钮
+    // 围观群/被禁言：输入与富媒体入口全部锁定，只留线下切换和生成按钮。
+    // 定义必须早于下面的按住说话逻辑——那段 useCallback 的依赖数组会在渲染时求值。
     const [muteNowTick, setMuteNowTick] = useState(() => Date.now());
     useEffect(() => {
         if (!muteUntilMs || muteUntilMs <= Date.now()) return;
@@ -728,6 +736,99 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     }, [muteUntilMs]);
     const muteRemainingMs = muteUntilMs > muteNowTick ? muteUntilMs - muteNowTick : 0;
     const inputLocked = isSpectator || muteRemainingMs > 0;
+
+    // ── 微信式「按住说话」──────────────────────────────
+    // voiceMode 打开后输入框换成一个大按钮：按下开始录、松手发送、上滑取消。
+    // 录音走 stt-cloud 的两级策略（页面 MediaRecorder → 壳原生录音），
+    // 所以 Android WebView 拿不到麦克风时也能用。
+    const [voiceMode, setVoiceMode] = useState(false);
+    const [voicePhase, setVoicePhase] = useState<"idle" | "recording" | "sending">("idle");
+    const [voiceHint, setVoiceHint] = useState("");
+    const [voiceCancelHint, setVoiceCancelHint] = useState(false);
+    const voiceRecRef = useRef<ActiveCallRecording | null>(null);
+    const voiceStartYRef = useRef(0);
+    const voicePointerIdRef = useRef<number | null>(null);
+
+    const beginHoldToTalk = useCallback(async (event: React.PointerEvent<HTMLButtonElement>) => {
+        if (inputLocked || voicePhase === "recording" || voicePhase === "sending") return;
+        voicePointerIdRef.current = event.pointerId;
+        voiceStartYRef.current = event.clientY;
+        setVoiceCancelHint(false);
+        setVoicePhase("recording");
+        setVoiceHint("正在录音…");
+        try {
+            voiceRecRef.current = await startCallRecording();
+        } catch (error) {
+            voiceRecRef.current = null;
+            setVoicePhase("idle");
+            setVoiceHint(error instanceof Error ? error.message : String(error));
+        }
+    }, [inputLocked, voicePhase]);
+
+    const finishHoldToTalk = useCallback(async (cancelled: boolean) => {
+        const active = voiceRecRef.current;
+        voiceRecRef.current = null;
+        voicePointerIdRef.current = null;
+        setVoiceCancelHint(false);
+        if (!active) { setVoicePhase("idle"); setVoiceHint(""); return; }
+
+        if (cancelled) {
+            active.cancel();
+            setVoicePhase("idle");
+            setVoiceHint("已取消");
+            window.setTimeout(() => setVoiceHint(""), 1200);
+            return;
+        }
+
+        setVoicePhase("sending");
+        setVoiceHint("发送中…");
+        let blob: Blob | null = null;
+        try {
+            blob = await active.stop();
+        } catch {
+            blob = null;
+        }
+        if (!blob) {
+            setVoicePhase("idle");
+            setVoiceHint("没录到声音，按住多停一会儿再松开");
+            window.setTimeout(() => setVoiceHint(""), 2000);
+            return;
+        }
+
+        const dataUrl = await new Promise<string | null>(resolve => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob as Blob);
+        });
+
+        let text = "";
+        const config = resolveCloudSttConfig(characterId);
+        if (config) {
+            try {
+                text = await transcribeAudioBlob(blob, config);
+            } catch {
+                text = "";
+            }
+        }
+        onSendVoice(text.trim(), dataUrl || undefined);
+        setVoicePhase("idle");
+        setVoiceHint("");
+    }, [characterId, onSendVoice]);
+
+    const handleVoicePointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+        if (voicePointerIdRef.current !== event.pointerId) return;
+        // 上滑超过 48px 视为取消（和微信一致）
+        setVoiceCancelHint(voiceStartYRef.current - event.clientY > 48);
+    }, []);
+
+    useEffect(() => () => {
+        voiceRecRef.current?.cancel();
+        voiceRecRef.current = null;
+    }, []);
+
+    // 表情包搜索联想：ESC/失焦置 true 隐藏，输入变化重新开启
+    const [suggestClosed, setSuggestClosed] = useState(false);
 
     const resetTextareaHeight = () => {
         if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -833,6 +934,26 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                     onClose={() => setSuggestClosed(true)}
                 />
             )}
+            {voiceMode ? (
+                <button
+                    type="button"
+                    className="chat-hold-to-talk"
+                    data-recording={voicePhase === "recording" ? "" : undefined}
+                    data-cancel={voiceCancelHint ? "" : undefined}
+                    disabled={inputLocked || voicePhase === "sending"}
+                    onPointerDown={e => { e.preventDefault(); void beginHoldToTalk(e); }}
+                    onPointerUp={() => { const cancel = voiceCancelHint; void finishHoldToTalk(cancel); }}
+                    onPointerCancel={() => void finishHoldToTalk(true)}
+                    onPointerMove={handleVoicePointerMove}
+                    onContextMenu={e => e.preventDefault()}
+                >
+                    {voicePhase === "recording"
+                        ? (voiceCancelHint ? "松开取消" : "松开发送 · 上滑取消")
+                        : voicePhase === "sending"
+                            ? "发送中…"
+                            : (voiceHint || "按住 说话")}
+                </button>
+            ) : (
             <textarea
                 ref={textareaRef}
                 rows={1}
@@ -870,6 +991,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                     ? (isSpectator ? "围观中，你不在这个群里" : `禁言中，剩余${Math.ceil(muteRemainingMs / 60000)}分钟`)
                     : (theaterMode ? "写下番外指令..." : undefined)}
             />
+            )}
 
             <div className="chat-input-actions">
                 <button
@@ -882,6 +1004,30 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                         <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0Z" />
                         <circle cx="12" cy="10" r="3" />
                     </svg>
+                </button>
+                {/* 键盘 / 按住说话 切换（微信式） */}
+                <button
+                    onClick={() => { onClosePanels(); setVoiceMode(v => !v); setVoiceHint(""); }}
+                    disabled={inputLocked}
+                    className="ui-bare-btn text-[var(--c-text)]"
+                    style={inputLocked ? { opacity: 0.35 } : undefined}
+                    aria-label={voiceMode ? "切换到键盘输入" : "切换到按住说话"}
+                    title={voiceMode ? "键盘输入" : "按住说话"}
+                >
+                    {voiceMode ? (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="2" y="5" width="20" height="14" rx="2" />
+                            <line x1="6" y1="10" x2="6" y2="10.01" /><line x1="10" y1="10" x2="10" y2="10.01" />
+                            <line x1="14" y1="10" x2="14" y2="10.01" /><line x1="18" y1="10" x2="18" y2="10.01" />
+                            <line x1="7" y1="15" x2="17" y2="15" />
+                        </svg>
+                    ) : (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                        </svg>
+                    )}
                 </button>
                 <button onClick={onToggleEmojiPanel} disabled={inputLocked} className="ui-bare-btn text-[var(--c-text)]" style={inputLocked ? { opacity: 0.35 } : undefined}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" /></svg>
@@ -6757,6 +6903,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 onStopGeneration={clearStuckGeneration}
                 onTriggerAIResponse={triggerAIResponse}
                 onSendSticker={(name, url) => { setShowStickerPanel(false); sendRichMessage("sticker", { label: name, stickerUrl: url }); }}
+                onSendVoice={(text, audioDataUrl) => { sendRichMessage("audio", { label: text || "（语音）" }, "", audioDataUrl); }}
             />
             ))}
 
