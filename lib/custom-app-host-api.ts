@@ -1085,10 +1085,9 @@ export function recognizeCustomAppSpeech(app: InstalledCustomApp, record: Record
  *
  * 与 voice.stt 互不影响:两者可以并行——识别拿文字给 AI 读,录音拿音频给别人听。
  */
-let activeCustomAppRecorder: { stop: () => void } | null = null;
+let activeCustomAppRecorder: { stop: () => void; cancel?: () => void } | null = null;
 
-export function recordCustomAppSpeech(record: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const maxMs = Math.max(1000, Math.min(60_000, Number(record.maxMs ?? 20_000) || 20_000));
+function recordViaWebAudio(maxMs: number): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       reject(new Error("当前环境不支持录音。"));
@@ -1142,6 +1141,137 @@ export function recordCustomAppSpeech(record: Record<string, unknown>): Promise<
       recorder.start();
       timer = window.setTimeout(() => { try { recorder?.stop(); } catch { /* ignore */ } }, maxMs);
     }).catch(() => fail(new Error("麦克风权限被拒绝或不可用。")));
+  });
+}
+
+/**
+ * 壳里暴露的原生录音桥（见 android-shell/.../MainActivity.kt 的 ShellBridge）。
+ * 存在的意义：部分 ROM/WebView 组合会直接拒绝页面的 getUserMedia，且系统
+ * 「行为记录 → 录音」里连一条调用都没有——请求根本没到系统层，授系统权限也没用。
+ * 这时改用壳自己的 MediaRecorder 录，把音频以 dataUrl 交回来，网页侧无感。
+ */
+type NativeRecordBridge = {
+  hasRecordPermission?: () => boolean;
+  requestRecordPermission?: () => boolean;
+  startNativeRecord?: () => string;
+  stopNativeRecord?: () => string;
+  cancelNativeRecord?: () => string;
+};
+
+function nativeRecordBridge(): NativeRecordBridge | null {
+  if (typeof window === "undefined") return null;
+  const bridge = (window as unknown as { AndroidShell?: NativeRecordBridge }).AndroidShell;
+  if (!bridge || typeof bridge.startNativeRecord !== "function") return null;
+  return bridge;
+}
+
+function parseBridgeJson(raw: unknown): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(String(raw ?? ""));
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function rejectReasonText(reason: string): string {
+  if (reason === "busy") return "麦克风正被上一次录音占用，等一秒再试。";
+  if (reason === "no-permission") return "小手机还没有录音权限。";
+  if (reason === "empty") return "没有录到声音（录得太短）。";
+  if (reason === "no-active-recording") return "当前没有正在进行的录音。";
+  return reason;
+}
+
+function recordViaNativeShell(bridge: NativeRecordBridge, maxMs: number): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+
+  if (bridge.hasRecordPermission && !bridge.hasRecordPermission()) {
+    try { bridge.requestRecordPermission?.(); } catch { /* 用户拒绝过，弹窗可能不出现 */ }
+    return Promise.reject(new Error("小手机还没有录音权限，已尝试弹出授权，允许后再试一次。"));
+  }
+
+  let startRaw = "";
+  try {
+    startRaw = String(bridge.startNativeRecord?.() ?? "");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return Promise.reject(new Error(`原生录音启动失败：${message}`));
+  }
+  const startInfo = parseBridgeJson(startRaw);
+  if (!startInfo || startInfo.ok !== true) {
+    return Promise.reject(new Error(`原生录音启动失败：${rejectReasonText(String(startInfo?.reason ?? "未知原因"))}`));
+  }
+
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    let settled = false;
+    let timer = 0;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      activeCustomAppRecorder = null;
+      fn();
+    };
+
+    const stop = () => {
+      if (settled) return;
+      let raw = "";
+      try {
+        raw = String(bridge.stopNativeRecord?.() ?? "");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        finish(() => reject(new Error(`原生录音停止失败：${message}`)));
+        return;
+      }
+      const info = parseBridgeJson(raw);
+      finish(() => {
+        const dataUrl = typeof info?.dataUrl === "string" ? info.dataUrl : "";
+        if (!info || info.ok !== true || !dataUrl) {
+          reject(new Error(`没有录到声音${info?.reason ? `（${rejectReasonText(String(info.reason))}）` : ""}。`));
+          return;
+        }
+        resolve({
+          ok: true,
+          dataUrl,
+          mimeType: typeof info.mimeType === "string" ? info.mimeType : "audio/mp4",
+          size: Number(info.size ?? 0) || 0,
+          ms: Number(info.ms ?? 0) || (Date.now() - startedAt),
+        });
+      });
+    };
+
+    timer = window.setTimeout(stop, maxMs);
+    activeCustomAppRecorder = {
+      stop,
+      cancel: () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        activeCustomAppRecorder = null;
+        try { bridge.cancelNativeRecord?.(); } catch { /* 忽略 */ }
+        reject(new Error("录音已取消。"));
+      },
+    };
+  });
+}
+
+/**
+ * voice.record 的统一入口：先走 WebView 的 getUserMedia，失败再退回壳的原生录音。
+ * 只在「页面录音确实拿不到」时才走兜底，所以其他机型行为完全不变。
+ */
+export function recordCustomAppSpeech(record: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const maxMs = Math.max(1000, Math.min(60_000, Number(record.maxMs ?? 20_000) || 20_000));
+  return recordViaWebAudio(maxMs).catch(webError => {
+    const bridge = nativeRecordBridge();
+    // 没有壳桥（纯浏览器打开）就保持原来的报错，不做无意义的二次尝试
+    if (!bridge) throw webError;
+    // 已经有录音在跑时不能再开第二路，否则两套录音器互相抢麦克风
+    if (webError instanceof Error && webError.message.includes("已有录音在进行中")) throw webError;
+    console.warn("[CustomAppRecord] 页面录音失败，改用壳原生录音:", webError);
+    return recordViaNativeShell(bridge, maxMs);
   });
 }
 
