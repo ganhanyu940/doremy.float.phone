@@ -52,4 +52,19 @@ object ShellBus {
         val literal = JSONObject.quote(detail.toString())
         evalJs("window.dispatchEvent(new CustomEvent('shell-lockdown',{detail:JSON.parse($literal)}))")
     }
+
+    /**
+     * 向网页派发一次拍照结果（网页侧监听 'shell-photo'）。
+     *
+     * 为什么也要单独走事件：TakePicture 是异步的，拍照期间用户可能已经切走页面、
+     * 网页也可能整页重载，做不到「调用处 await 一个返回值」。用事件推送，
+     * 谁在监听谁处理，页面没了就自然丢弃。
+     *
+     * @param action captured（成功，payload 含 dataUrl）/ cancelled（用户取消）/ failed（含 reason）
+     */
+    fun dispatchPhotoEvent(action: String, payload: JSONObject = JSONObject()) {
+        val detail = JSONObject(payload.toString()).put("action", action)
+        val literal = JSONObject.quote(detail.toString())
+        evalJs("window.dispatchEvent(new CustomEvent('shell-photo',{detail:JSON.parse($literal)}))")
+    }
 }

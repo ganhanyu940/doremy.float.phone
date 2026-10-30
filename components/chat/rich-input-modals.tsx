@@ -23,6 +23,46 @@ function hasShellNativeRecorder(): boolean {
     return !!bridge && typeof bridge.startNativeRecord === "function";
 }
 
+/**
+ * 把图片文件读成可用于聊天气泡的 dataUrl。
+ *
+ * 相机直出的照片常有 3000×4000、几 MB，直接 readAsDataURL 会让消息体
+ * 大到存不进 IndexedDB、发出去也可能被转写接口拒掉。所以先等比缩到
+ * 长边 1600 再编码——聊天里看图完全够，体积能降一个数量级。
+ * 解码失败（少见格式）时退回原图，不让用户卡在这里。
+ *
+ * 单独导出：输入栏那一排的常驻相机按钮也要用同一套压缩逻辑，
+ * 两处各写一份迟早会走样。
+ */
+export function fileToChatImageDataUrl(file: File, maxEdge = 1600): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("读取图片失败"));
+        reader.onload = () => {
+            const raw = reader.result as string;
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+                    if (scale >= 1) { resolve(raw); return; }
+                    const canvas = document.createElement("canvas");
+                    canvas.width = Math.round(img.width * scale);
+                    canvas.height = Math.round(img.height * scale);
+                    const ctx = canvas.getContext("2d");
+                    if (!ctx) { resolve(raw); return; }
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    resolve(canvas.toDataURL("image/jpeg", 0.86));
+                } catch {
+                    resolve(raw);
+                }
+            };
+            img.onerror = () => resolve(raw);
+            img.src = raw;
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
 // ── Photo Input Modal ─────────────────────────────
 
 interface PhotoInputModalProps {
@@ -33,19 +73,25 @@ interface PhotoInputModalProps {
 export function PhotoInputModal({ onSend, onClose }: PhotoInputModalProps) {
     const [desc, setDesc] = useState("");
     const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    // 拍照专用 input：带 capture 属性，点它由 WebView 直接拉起系统相机，
+    // 不必退到桌面拍完再从相册挑。相册另用一个不带 capture 的 input。
+    const cameraInputRef = useRef<HTMLInputElement>(null);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
+        // 清空 value，否则连续选同一张图不会再触发 change
+        e.target.value = "";
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-            setImageDataUrl(reader.result as string);
-        };
-        reader.readAsDataURL(file);
+        setBusy(true);
+        void fileToChatImageDataUrl(file)
+            .then(url => setImageDataUrl(url))
+            .catch(() => undefined)
+            .finally(() => setBusy(false));
     };
 
-    const canSend = !!imageDataUrl;
+    const canSend = !!imageDataUrl && !busy;
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -82,6 +128,27 @@ export function PhotoInputModal({ onSend, onClose }: PhotoInputModalProps) {
                         className="hidden"
                         onChange={handleFileChange}
                     />
+                    <input
+                        ref={cameraInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        className="hidden"
+                        onChange={handleFileChange}
+                    />
+                </div>
+                {/* 两个来源分开给：拍照走 capture（直接开相机），相册走普通选择器 */}
+                <div className="flex gap-3 w-full">
+                    <button
+                        type="button"
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="ui-btn ui-btn-primary flex-1"
+                    >📷 拍照</button>
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1"
+                    >从相册选</button>
                 </div>
                 <div className="flex gap-3 w-full">
                     <button

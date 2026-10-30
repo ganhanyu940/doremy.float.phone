@@ -10,7 +10,7 @@ import { isKnownStickerLabel } from "@/lib/sticker-data";
 import { translateReasoningText } from "@/lib/reasoning-translate";
 import { MessageBubble, MediaDetailModal, prewarmStickerCache, BilingualTextBlock, isStandaloneHtmlPreviewContent, normalizeTextBubbleContent } from "./message-bubble";
 import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
-import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal } from "./rich-input-modals";
+import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal, fileToChatImageDataUrl } from "./rich-input-modals";
 import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
@@ -690,6 +690,8 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
 	onSendSticker: (name: string, url?: string) => void;
     /** 按住说话发出的语音条：text 是识别结果（可能为空），audioDataUrl 是音频 */
     onSendVoice: (text: string, audioDataUrl?: string) => void;
+    /** 常驻相机按钮拍完直接发图（imageDataUrl 已缩到长边 1600） */
+    onSendPhoto: (imageDataUrl: string) => void;
 }>(function ChatTextInputBar({
     characterName,
     characterId,
@@ -722,6 +724,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onTriggerAIResponse,
     onSendSticker,
     onSendVoice,
+    onSendPhoto,
 }, ref) {
     const [inputText, setInputText] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -736,6 +739,28 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     }, [muteUntilMs]);
     const muteRemainingMs = muteUntilMs > muteNowTick ? muteUntilMs - muteNowTick : 0;
     const inputLocked = isSpectator || muteRemainingMs > 0;
+
+    // ── 常驻拍照入口 ────────────────────────────────────
+    // 之前拍照藏在「+」面板深处的「照片」里，而自定义 APP 的 plusActions 一多
+    // 就会被挤进「展开更多功能」。用户的实际痛点是「发张图要切回桌面拍完再回来」，
+    // 所以这里给一个常驻按钮，点一下直接拉起系统相机（capture=environment），
+    // 拍完立刻发送，不经过预览弹窗。
+    const cameraInputRef = useRef<HTMLInputElement | null>(null);
+    const [photoBusy, setPhotoBusy] = useState(false);
+
+    const handleCameraChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        // 清空 value：否则连续拍两张时第二张不触发 change
+        e.target.value = "";
+        if (!file) return;
+        setPhotoBusy(true);
+        void fileToChatImageDataUrl(file)
+            .then(dataUrl => {
+                if (dataUrl) onSendPhoto(dataUrl);
+            })
+            .catch(() => undefined)
+            .finally(() => setPhotoBusy(false));
+    }, [onSendPhoto]);
 
     // ── 微信式「按住说话」──────────────────────────────
     // voiceMode 打开后输入框换成一个大按钮：按下开始录、松手发送、上滑取消。
@@ -1029,6 +1054,35 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
                         </svg>
                     )}
                 </button>
+                {/* 常驻拍照：点一下直连系统相机，拍完直接发出（不弹预览） */}
+                <button
+                    onClick={() => { onClosePanels(); cameraInputRef.current?.click(); }}
+                    disabled={inputLocked || photoBusy}
+                    className="ui-bare-btn text-[var(--c-text)]"
+                    style={inputLocked || photoBusy ? { opacity: 0.35 } : undefined}
+                    aria-label="拍照发送"
+                    title="拍照发送"
+                >
+                    {photoBusy ? (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="animate-spin">
+                            <path d="M21 12a9 9 0 1 1-6.2-8.6" />
+                        </svg>
+                    ) : (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z" />
+                            <circle cx="12" cy="13" r="4" />
+                        </svg>
+                    )}
+                </button>
+                {/* 隐藏的相机 input：capture 让 WebView 直接拉起系统相机，不走相册 */}
+                <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleCameraChange}
+                />
                 <button onClick={onToggleEmojiPanel} disabled={inputLocked} className="ui-bare-btn text-[var(--c-text)]" style={inputLocked ? { opacity: 0.35 } : undefined}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" /></svg>
                 </button>
@@ -6904,6 +6958,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 onTriggerAIResponse={triggerAIResponse}
                 onSendSticker={(name, url) => { setShowStickerPanel(false); sendRichMessage("sticker", { label: name, stickerUrl: url }); }}
                 onSendVoice={(text, audioDataUrl) => { sendRichMessage("audio", { label: text || "（语音）" }, "", audioDataUrl); }}
+                onSendPhoto={(imageDataUrl) => { sendRichMessage("image", { label: "" }, "", imageDataUrl); }}
             />
             ))}
 

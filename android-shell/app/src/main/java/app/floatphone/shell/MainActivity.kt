@@ -45,10 +45,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.health.connect.client.PermissionController
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
@@ -646,6 +648,106 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* 授权结果由网页侧用 hasRecordPermission() 复查，这里不替它判断 */ }
 
+    // ── 原生拍照（1.0.16）────────────────────────────────
+    // 为什么需要：WebView 的 <input type="file" accept="image/*" capture>
+    // 在多数 Android WebView 上会忽略 capture 属性，仍然只弹文件选择器——
+    // 用户拍不了照，只能退到系统相机拍完再回来选图，来回折腾。
+    // 这里用 TakePicture 直接拉起系统相机，拍完在原生侧压缩后交回网页。
+    //
+    // 压缩必须在原生做：相机原图动辄 3~5MB，直接 base64 塞进
+    // evaluateJavascript，字符串长度能到千万级，WebView 扛不住。
+
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* 结果由网页侧用 hasCameraPermission() 复查，与录音桥保持同一约定 */ }
+
+    /** 正在等待结果的临时照片文件；null = 当前没有进行中的拍照。 */
+    private var pendingPhotoFile: File? = null
+
+    private val takePictureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        val file = pendingPhotoFile
+        pendingPhotoFile = null
+        if (!success) {
+            file?.let { runCatching { it.delete() } }
+            ShellBus.dispatchPhotoEvent("cancelled")
+            return@registerForActivityResult
+        }
+        // 解码 + 缩放一张 4000px 的图能卡住主线程好几百毫秒，必须挪到后台线程
+        Thread {
+            val result = runCatching { encodePhotoPayload(file) }
+            file?.let { runCatching { it.delete() } }
+            result
+                .onSuccess { ShellBus.dispatchPhotoEvent("captured", it) }
+                .onFailure {
+                    ShellBus.dispatchPhotoEvent(
+                        "failed",
+                        JSONObject().put("reason", it.message ?: "encode-failed"),
+                    )
+                }
+        }.start()
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this@MainActivity,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+
+    /**
+     * 把拍到的照片压缩成 dataUrl。
+     *
+     * 两级缩小：先 inSampleSize 整数抽样（省内存，避免直接解码 1200 万像素进堆），
+     * 再按长边 1600 精确缩放；最后 JPEG 88 编码。一张 4000×3000 的原图通常
+     * 能压到 200~400KB，聊天里看图完全够，也不至于把 IndexedDB 撑爆。
+     */
+    private fun encodePhotoPayload(file: File?): JSONObject {
+        val src = file ?: throw IllegalStateException("no-file")
+        if (!src.exists() || src.length() == 0L) throw IllegalStateException("empty")
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(src.absolutePath, bounds)
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longest <= 0) throw IllegalStateException("decode-failed")
+
+        var sample = 1
+        while (longest / sample > 2000) sample *= 2
+        val decoded = BitmapFactory.decodeFile(src.absolutePath, BitmapFactory.Options().apply {
+            inSampleSize = sample
+        }) ?: throw IllegalStateException("decode-failed")
+
+        val maxEdge = 1600f
+        val scale = minOf(1f, maxEdge / maxOf(decoded.width, decoded.height))
+        val target = if (scale >= 1f) {
+            decoded
+        } else {
+            Bitmap.createScaledBitmap(
+                decoded,
+                (decoded.width * scale).toInt().coerceAtLeast(1),
+                (decoded.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        }
+
+        val out = ByteArrayOutputStream()
+        target.compress(Bitmap.CompressFormat.JPEG, 88, out)
+        val width = target.width
+        val height = target.height
+        if (target !== decoded) target.recycle()
+        decoded.recycle()
+
+        val bytes = out.toByteArray()
+        val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        return JSONObject().apply {
+            put("dataUrl", "data:image/jpeg;base64,$base64")
+            put("mimeType", "image/jpeg")
+            put("size", bytes.size)
+            put("width", width)
+            put("height", height)
+        }
+    }
+
     private var nativeRecorder: MediaRecorder? = null
     private var nativeRecordFile: File? = null
     private var nativeRecordStartedAt: Long = 0L
@@ -712,6 +814,54 @@ class MainActivity : AppCompatActivity() {
         // ── 原生录音桥 ────────────────────────────────────────────
         // 全部返回 JSON 字符串（同设备动作桥的约定）：@JavascriptInterface 对复杂
         // 返回类型支持有限，字符串最稳，也能把「为什么失败」原样带回去。
+
+        // ── 原生拍照（1.0.16）─────────────────────────────
+        // 结果是**异步**的：takePhoto() 只回「是否已拉起相机」，真正的照片经
+        // ShellBus 的 'shell-photo' 事件推回网页，detail 形如
+        // { action: 'captured'|'cancelled'|'failed', dataUrl?, mimeType?, size?, width?, height?, reason? }
+
+        /** 是否已拿到系统相机权限。 */
+        @JavascriptInterface
+        fun hasCameraPermission(): Boolean = this@MainActivity.hasCameraPermission()
+
+        /** 主动申请一次相机权限（系统弹窗）。结果由调用方稍后复查 hasCameraPermission。 */
+        @JavascriptInterface
+        fun requestCameraPermission(): Boolean {
+            if (this@MainActivity.hasCameraPermission()) return true
+            runCatching { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+            return false
+        }
+
+        /**
+         * 拉起系统相机拍一张。成功发起返回 {"ok":true}；
+         * 失败返回 {"ok":false,"reason":"no-permission|busy|launch-failed|<异常>"}。
+         * 用户取消会收到 action=cancelled 事件，不算错误。
+         */
+        @JavascriptInterface
+        fun takePhoto(): String {
+            if (!this@MainActivity.hasCameraPermission()) {
+                runCatching { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
+                return "{\"ok\":false,\"reason\":\"no-permission\"}"
+            }
+            if (pendingPhotoFile != null) return "{\"ok\":false,\"reason\":\"busy\"}"
+            return runCatching {
+                val dir = File(cacheDir, "photos").apply { mkdirs() }
+                val file = File(dir, "photo-${System.currentTimeMillis()}.jpg")
+                pendingPhotoFile = file
+                // 必须走 FileProvider：targetSdk 24+ 直接传 file:// 会抛
+                // FileUriExposedException，相机也拿不到写权限。
+                val uri = FileProvider.getUriForFile(
+                    this@MainActivity,
+                    "$packageName.fileprovider",
+                    file,
+                )
+                takePictureLauncher.launch(uri)
+                "{\"ok\":true}"
+            }.getOrElse {
+                pendingPhotoFile = null
+                "{\"ok\":false,\"reason\":${JSONObject.quote(it.message ?: "launch-failed")}}"
+            }
+        }
 
         /** 是否已拿到系统录音权限。 */
         @JavascriptInterface
