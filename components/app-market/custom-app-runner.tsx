@@ -2037,7 +2037,7 @@ export function CustomAppRunner({
           ref={iframeRef}
           title={app.name}
           className="custom-app-runner-frame"
-          sandbox="allow-scripts allow-downloads"
+          sandbox="allow-scripts allow-downloads allow-same-origin"
           /* allow 必须显式授予 microphone/camera：iframe 默认不带麦克风权限，页面里
              任何 getUserMedia 都会被 Permissions Policy 在浏览器内部直接拒绝，连
              WebChromeClient.onPermissionRequest 都不会触发——系统「行为记录 → 录音」里

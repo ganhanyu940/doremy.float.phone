@@ -1192,6 +1192,7 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onToggleEmojiPanel: () => void;
     onSendText: (text: string) => boolean;
     onStopGeneration: () => void;
+    onSendPhoto?: (imageDataUrl: string) => void;
 }>(function OfflineTextInputBar({
     isOfflineGenerating,
     isSpectator,
@@ -1202,7 +1203,23 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onToggleEmojiPanel,
     onSendText,
     onStopGeneration,
+    onSendPhoto,
 }, ref) {
+    const offlineCameraInputRef = useRef<HTMLInputElement | null>(null);
+    const [offlinePhotoBusy, setOfflinePhotoBusy] = useState(false);
+
+    const handleOfflineCameraChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file) return;
+        setOfflinePhotoBusy(true);
+        void fileToChatImageDataUrl(file)
+            .then(dataUrl => {
+                if (dataUrl && onSendPhoto) onSendPhoto(dataUrl);
+            })
+            .catch(() => undefined)
+            .finally(() => setOfflinePhotoBusy(false));
+    }, [onSendPhoto]);
     const [inputText, setInputText] = useState("");
     const inputTextRef = useRef("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1306,6 +1323,35 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
                         <path d="M8 13h5" />
                     </svg>
                 </button>
+                {/* 线下模式常驻拍照/发图按钮 */}
+                <button
+                    type="button"
+                    onClick={() => { onCloseEmojiPanel(); offlineCameraInputRef.current?.click(); }}
+                    disabled={isSpectator || isOfflineGenerating || offlinePhotoBusy}
+                    className="ui-bare-btn text-[var(--c-text)]"
+                    style={isSpectator || isOfflineGenerating || offlinePhotoBusy ? { opacity: 0.35 } : undefined}
+                    aria-label="线下拍照/发图"
+                    title="线下拍照/发图"
+                >
+                    {offlinePhotoBusy ? (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="animate-spin">
+                            <path d="M21 12a9 9 0 1 1-6.2-8.6" />
+                        </svg>
+                    ) : (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z" />
+                            <circle cx="12" cy="13" r="4" />
+                        </svg>
+                    )}
+                </button>
+                <input
+                    ref={offlineCameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleOfflineCameraChange}
+                />
                 <button
                     onClick={onToggleEmojiPanel}
                     disabled={isSpectator}
@@ -6928,6 +6974,12 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                     onToggleEmojiPanel={() => { setShowEmojiPanel(!showEmojiPanel); setShowStickerPanel(false); setShowPlusMenu(false); }}
                     onSendText={handleOfflineSend}
                     onStopGeneration={clearOfflineGeneration}
+                    onSendPhoto={(dataUrl) => {
+                        const marker = `[图片:${dataUrl}]`;
+                        const current = offlineTextInputRef.current ? (offlineTextInputRef.current as any).inputText || "" : "";
+                        const nextText = current ? `${current}\n${marker}` : marker;
+                        handleOfflineSend(nextText);
+                    }}
                 />
             ) : (
             <ChatTextInputBar
