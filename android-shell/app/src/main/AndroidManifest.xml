@@ -238,6 +238,17 @@
             android:name=".NotificationReplyReceiver"
             android:exported="false" />
 
+        <!-- FileProvider：供系统相机写入拍摄照片（修复 FileUriExposedException 闪退/无响应） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- 通话控制无障碍服务：浮窗保活 + 前台 App 感知（需用户在系统设置里手动开启） -->
         <service
             android:name=".CallControlService"

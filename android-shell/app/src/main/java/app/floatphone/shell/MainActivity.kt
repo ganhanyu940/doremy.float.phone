@@ -68,7 +68,7 @@ class MainActivity : AppCompatActivity() {
         /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
         /** 1.0.15：麦克风自检探针（getMicProbe/logMicProbe）+ onConsoleMessage 回传 */
         /** 1.0.16：新增原生 Google TTS 语音引擎桥接（speakText / stopSpeak / getTtsVoices） */
-        const val VERSION = "1.0.17"
+        const val VERSION = "1.0.18"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -104,6 +104,9 @@ class MainActivity : AppCompatActivity() {
             nativeTts = TextToSpeech(this@MainActivity) { status ->
                 isTtsInitialized = (status == TextToSpeech.SUCCESS)
                 if (isTtsInitialized) {
+                    runCatching {
+                        nativeTts?.language = java.util.Locale.US
+                    }
                     injectTtsPolyfill()
                 }
             }

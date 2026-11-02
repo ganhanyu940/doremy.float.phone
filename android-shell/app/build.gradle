@@ -36,8 +36,11 @@ android {
         // 1.0.17：
         // 1. 修复 Android 11+ 包可见性（AndroidManifest 增加 TTS_SERVICE 查询意图），让系统原生的 Google TTS 真正被绑定并发声；
         // 2. 完美支持直接拍照（onShowFileChooser 拦截 isCaptureEnabled 并直启 MediaStore.ACTION_IMAGE_CAPTURE）。
-        versionCode 16
-        versionName "1.0.17"
+        // 1.0.18：
+        // 1. 补齐 FileProvider 与 file_paths.xml 声明，彻底修复点击拍照无反应（此前因缺少 FileProvider 导致启动相机抛出 SecurityException 并静默失败）；
+        // 2. 优化 TextToSpeech 初始化预设美音，打通本地 Google TTS 朗读。
+        versionCode 17
+        versionName "1.0.18"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 
