@@ -32,8 +32,9 @@ android {
         // 1.0.15：麦克风自检探针。只增加观测、不改任何行为——把
         //         「onPermissionRequest 到底有没有被回调」这件事变成可读的证据，
         //         外加 onConsoleMessage 回传页面的 getUserMedia 报错。
-        versionCode 14
-        versionName "1.0.15"
+        // 1.0.16：新增系统原生 TextToSpeech 桥，支持 Google TTS 本地零延迟免费朗读点读。
+        versionCode 15
+        versionName "1.0.16"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

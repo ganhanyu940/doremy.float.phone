@@ -25,6 +25,7 @@ import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Base64
+import android.speech.tts.TextToSpeech
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
@@ -66,7 +67,8 @@ class MainActivity : AppCompatActivity() {
         val SITE_URL: String = BuildConfig.SITE_URL
         /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
         /** 1.0.15：麦克风自检探针（getMicProbe/logMicProbe）+ onConsoleMessage 回传 */
-        const val VERSION = "1.0.15"
+        /** 1.0.16：新增原生 Google TTS 语音引擎桥接（speakText / stopSpeak / getTtsVoices） */
+        const val VERSION = "1.0.16"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -92,6 +94,21 @@ class MainActivity : AppCompatActivity() {
 
     /** 网页消息通知的自增 id：同一条消息覆盖同一 id 会让新通知顶掉旧的，故逐条递增。 */
     private var webNotifId = 500
+
+    // ── 原生 TTS 语音引擎桥接（1.0.16）────────────────────────
+    private var nativeTts: TextToSpeech? = null
+    @Volatile
+    private var isTtsInitialized = false
+    private fun ensureTtsInitialized() {
+        if (nativeTts == null) {
+            nativeTts = TextToSpeech(this@MainActivity) { status ->
+                isTtsInitialized = (status == TextToSpeech.SUCCESS)
+                if (isTtsInitialized) {
+                    injectTtsPolyfill()
+                }
+            }
+        }
+    }
 
     // ── 麦克风自检探针（1.0.15）───────────────────────────────
     // 只做观测，不参与任何判断：串里每一行都是「当时发生了什么」的原始记录。
@@ -347,6 +364,11 @@ class MainActivity : AppCompatActivity() {
         ShellBus.webView = webView
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                injectTtsPolyfill()
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url
                 val scheme = url.scheme ?: return false
@@ -468,6 +490,7 @@ class MainActivity : AppCompatActivity() {
         // 冷启动带深链（如来电接听）直接加载目标；否则加载首页
         webView.loadUrl(consumeOpenUrl(intent) ?: SITE_URL)
         ensurePushService()
+        ensureTtsInitialized()
     }
 
     /** singleTask：App 已在运行时（如全屏来电页接听）通过 onNewIntent 送达深链 */
@@ -569,6 +592,41 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
+    /**
+     * 自动向网页注入 window.speechSynthesis 兜底。
+     * 让 WebView 里的背单词/第三方 App 调 speechSynthesis 时自动转接到 Google TTS 原生桥！
+     */
+    private fun injectTtsPolyfill() {
+        if (!::webView.isInitialized) return
+        val js = """
+            (function() {
+                if (window.__floatshell_tts_injected) return;
+                window.__floatshell_tts_injected = true;
+                if (!window.speechSynthesis || typeof window.speechSynthesis.speak !== 'function' || !window.speechSynthesis.getVoices().length) {
+                    var synth = window.speechSynthesis || {};
+                    var dummyVoices = [
+                        { voiceURI: 'google-tts-en', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
+                        { voiceURI: 'google-tts-uk', name: 'Google UK English (Native)', lang: 'en-GB', localService: true, default: false },
+                        { voiceURI: 'google-tts-zh', name: 'Google 普通话 (Native)', lang: 'zh-CN', localService: true, default: false }
+                    ];
+                    synth.getVoices = function() { return dummyVoices; };
+                    synth.speak = function(utterance) {
+                        if (!utterance || !window.AndroidShell || !window.AndroidShell.speakText) return;
+                        var text = utterance.text || '';
+                        var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
+                        var rate = utterance.rate || 1.0;
+                        window.AndroidShell.speakText(text, lang, rate);
+                    };
+                    synth.cancel = function() {
+                        if (window.AndroidShell && window.AndroidShell.stopSpeak) window.AndroidShell.stopSpeak();
+                    };
+                    window.speechSynthesis = synth;
+                }
+            })();
+        """.trimIndent()
+        webView.post { webView.evaluateJavascript(js, null) }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // 临时唤出状态栏后、或从锁屏/多任务回来时焦点变化，需要重新隐藏一次
@@ -630,6 +688,11 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (ShellBus.webView === webView) ShellBus.webView = null
         CookieManager.getInstance().flush()
+        runCatching {
+            nativeTts?.stop()
+            nativeTts?.shutdown()
+            nativeTts = null
+        }
         webView.destroy()
         super.onDestroy()
     }
@@ -809,6 +872,50 @@ class MainActivity : AppCompatActivity() {
         fun clearMicProbe() {
             synchronized(micProbeEvents) { micProbeEvents.clear() }
             appendMicProbe("探针已清空（shell=$VERSION）")
+        }
+
+        // ── 原生 TTS 语音引擎桥接（Google TTS 免费本地朗读）──
+
+        /** 检查系统原生 TTS 引擎是否就绪 */
+        @JavascriptInterface
+        fun isTtsReady(): Boolean = isTtsInitialized
+
+        /**
+         * 朗读一段文本（使用系统原生 TTS / Google TTS）
+         * @param text 要读的文本（单词、句子）
+         * @param lang 语言代码（如 "en-US", "en-GB", "zh-CN", "ja-JP"），默认根据文本自动或传 "en-US"
+         * @param rate 语速（0.5 ~ 2.0，默认 1.0）
+         */
+        @JavascriptInterface
+        fun speakText(text: String, lang: String = "en-US", rate: Float = 1.0f): String {
+            ensureTtsInitialized()
+            val tts = nativeTts ?: return "{\"ok\":false,\"reason\":\"not-initialized\"}"
+            if (!isTtsInitialized) return "{\"ok\":false,\"reason\":\"initializing\"}"
+            val clean = text.trim()
+            if (clean.isEmpty()) return "{\"ok\":false,\"reason\":\"empty-text\"}"
+
+            return runCatching {
+                val locale = when (lang.lowercase()) {
+                    "zh-cn", "zh", "cmn-cn" -> java.util.Locale.CHINA
+                    "zh-tw", "zh-hk" -> java.util.Locale.TAIWAN
+                    "en-gb" -> java.util.Locale.UK
+                    "ja-jp", "ja" -> java.util.Locale.JAPAN
+                    "ko-kr", "ko" -> java.util.Locale.KOREA
+                    else -> java.util.Locale.US
+                }
+                tts.language = locale
+                tts.setSpeechRate(rate.coerceIn(0.5f, 2.0f))
+                tts.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "tts_${System.currentTimeMillis()}")
+                "{\"ok\":true}"
+            }.getOrElse {
+                "{\"ok\":false,\"reason\":${JSONObject.quote(it.message ?: "speak-failed")}}"
+            }
+        }
+
+        /** 停止当前正在播放的原生 TTS 发音 */
+        @JavascriptInterface
+        fun stopSpeak() {
+            runCatching { nativeTts?.stop() }
         }
 
         // ── 原生录音桥 ────────────────────────────────────────────
