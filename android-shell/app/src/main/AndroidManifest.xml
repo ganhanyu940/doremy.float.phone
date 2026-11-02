@@ -27,6 +27,11 @@
     <!-- Health Connect：Android 13 及以下要单独装那个 App，这里声明它是为了
          在没装时能正确地「探测不到」而不是崩掉。Android 14+ 它已并入系统。 -->
     <queries>
+        <!-- 声明系统 TTS 引擎意图（Android 11+ 包可见性硬性要求，否则 TextToSpeech 绑定不到 Google TTS） -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <package android:name="com.google.android.tts" />
         <package android:name="com.google.android.apps.healthdata" />
         <!-- 闹钟与倒计时：Android 11+ 有包可见性限制，不在 queries 里声明这两个
              意图，就「看不到」系统时钟 App，startActivity 会抛

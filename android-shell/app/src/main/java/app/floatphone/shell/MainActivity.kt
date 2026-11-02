@@ -68,7 +68,7 @@ class MainActivity : AppCompatActivity() {
         /** 1.0.13：新增锁机（startLockdown/prepareLockdown/stopLockdown/listInstalledApps） */
         /** 1.0.15：麦克风自检探针（getMicProbe/logMicProbe）+ onConsoleMessage 回传 */
         /** 1.0.16：新增原生 Google TTS 语音引擎桥接（speakText / stopSpeak / getTtsVoices） */
-        const val VERSION = "1.0.16"
+        const val VERSION = "1.0.17"
         /** 来电接听等场景的站内深链（必须以 SITE_URL 开头，否则忽略） */
         const val EXTRA_OPEN_URL = "open_url"
         /** 外部 App（如桌宠）唤起本壳用的自定义 scheme：floatshell://open?url=<站内地址> */
@@ -210,6 +210,29 @@ class MainActivity : AppCompatActivity() {
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+
+    private var pendingCameraCaptureUri: Uri? = null
+
+    private val cameraCaptureLauncher = registerForActivityResult(
+        object : androidx.activity.result.contract.ActivityResultContract<Pair<Intent, Uri>, Uri?>() {
+            override fun createIntent(context: Context, input: Pair<Intent, Uri>): Intent {
+                pendingCameraCaptureUri = input.second
+                return input.first
+            }
+            override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+                return if (resultCode == android.app.Activity.RESULT_OK) pendingCameraCaptureUri else null
+            }
+        }
+    ) { capturedUri ->
+        val callback = filePathCallback
+        filePathCallback = null
+        pendingCameraCaptureUri = null
+        if (capturedUri != null) {
+            callback?.onReceiveValue(arrayOf(capturedUri))
+        } else {
+            callback?.onReceiveValue(emptyArray())
+        }
+    }
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -446,9 +469,26 @@ class MainActivity : AppCompatActivity() {
                 filePathCallback?.onReceiveValue(emptyArray())
                 filePathCallback = callback
                 return runCatching {
+                    // 若网页指定了 capture（拍照请求），直接唤起系统相机！
+                    if (params.isCaptureEnabled) {
+                        val takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                        val photoFile = runCatching {
+                            val dir = File(cacheDir, "camera_photos").apply { mkdirs() }
+                            File(dir, "capture_${System.currentTimeMillis()}.jpg")
+                        }.getOrNull()
+                        if (photoFile != null) {
+                            val photoUri = FileProvider.getUriForFile(
+                                this@MainActivity,
+                                "$packageName.fileprovider",
+                                photoFile,
+                            )
+                            takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri)
+                            cameraCaptureLauncher.launch(Pair(takePictureIntent, photoUri))
+                            return@runCatching true
+                        }
+                    }
+
                     val intent = params.createIntent()
-                    // createIntent() 一般已按 params.mode 带上 EXTRA_ALLOW_MULTIPLE；个别 WebView
-                    // 版本拿不到 multiple 模式，网页多选会退化成单选，这里显式兜一次。
                     if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
                         intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     }
