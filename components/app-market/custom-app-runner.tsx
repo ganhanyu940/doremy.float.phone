@@ -201,6 +201,35 @@ html, body { min-height: 100%; }
     var reason = event && event.reason;
     reportError('未处理的 Promise 拒绝：' + String((reason && reason.message) || reason));
   });
+
+  // ── Web Speech TTS 自动垫片（支持 HelloWord 等背单词 App 原生朗读）──
+  (function(){
+    try {
+      var topShell = (window.parent && window.parent.AndroidShell) || (window.top && window.top.AndroidShell) || window.AndroidShell;
+      if (topShell && typeof topShell.speakText === 'function') {
+        var dummyVoices = [
+          { voiceURI: 'google-tts-us', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
+          { voiceURI: 'google-tts-uk', name: 'Google UK English (Native)', lang: 'en-GB', localService: true, default: false },
+          { voiceURI: 'google-tts-zh', name: 'Google 普通话 (Native)', lang: 'zh-CN', localService: true, default: false }
+        ];
+        var synth = window.speechSynthesis || {};
+        synth.getVoices = function() { return dummyVoices; };
+        synth.speak = function(utterance) {
+          if (!utterance) return;
+          var text = utterance.text || '';
+          var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
+          var rate = utterance.rate || 1.0;
+          topShell.speakText(text, lang, rate);
+        };
+        synth.cancel = function() {
+          if (topShell.stopSpeak) topShell.stopSpeak();
+        };
+        window.speechSynthesis = synth;
+        // 触发一次 voiceschanged 事件，让依赖监听事件初始化的背单词软件立刻就绪
+        try { window.dispatchEvent(new Event('voiceschanged')); } catch(e){}
+      }
+    } catch(e) {}
+  })();
   // 判「有没有渲染出东西」不能靠 getBoundingClientRect：沙盒 iframe 在某些容器里
   // 会被跳过布局，元素尺寸全是 0，正常应用也会被误判成白屏。改看 DOM 本身。
   function ownText(el){
