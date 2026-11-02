@@ -1,3 +1,4 @@
+# Trigger Cloudflare Pages deployment with next-on-pages adapter
 [build]
   command = "npm run build"
   publish = ".next"
