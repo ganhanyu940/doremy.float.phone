@@ -137,6 +137,14 @@ export function PhotoInputModal({ onSend, onClose }: PhotoInputModalProps) {
                         onChange={handleFileChange}
                     />
                 </div>
+                {/* 文字输入框 */}
+                <textarea
+                    value={desc}
+                    onChange={e => setDesc(e.target.value)}
+                    placeholder="说点什么...（可选）"
+                    className="ui-input w-full min-h-[80px] resize-y"
+                    disabled={busy}
+                />
                 {/* 两个来源分开给：拍照走 capture（直接开相机），相册走普通选择器 */}
                 <div className="flex gap-3 w-full">
                     <button
