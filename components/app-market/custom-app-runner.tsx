@@ -206,28 +206,57 @@ html, body { min-height: 100%; }
   (function(){
     try {
       var topShell = (window.parent && window.parent.AndroidShell) || (window.top && window.top.AndroidShell) || window.AndroidShell;
-      if (topShell && typeof topShell.speakText === 'function') {
-        var dummyVoices = [
-          { voiceURI: 'google-tts-us', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
-          { voiceURI: 'google-tts-uk', name: 'Google UK English (Native)', lang: 'en-GB', localService: true, default: false },
-          { voiceURI: 'google-tts-zh', name: 'Google 普通话 (Native)', lang: 'zh-CN', localService: true, default: false }
-        ];
-        var synth = window.speechSynthesis || {};
-        synth.getVoices = function() { return dummyVoices; };
-        synth.speak = function(utterance) {
-          if (!utterance) return;
-          var text = utterance.text || '';
-          var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
-          var rate = utterance.rate || 1.0;
-          topShell.speakText(text, lang, rate);
-        };
-        synth.cancel = function() {
-          if (topShell.stopSpeak) topShell.stopSpeak();
-        };
-        window.speechSynthesis = synth;
-        // 触发一次 voiceschanged 事件，让依赖监听事件初始化的背单词软件立刻就绪
+      // 注意：跨域沙盒 iframe 里访问 window.parent.AndroidShell 可能会抛 DOMException
+      // 所以我们直接从宿主发消息过来要求转交原生调用，或者走 postMessage 代理。
+      // 为简单起见，这里先把 speechSynthesis 接管，后续动作通过向 parent 发请求来实现！
+      var synth = window.speechSynthesis || {};
+      var dummyVoices = [
+        { voiceURI: 'google-tts-us', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
+        { voiceURI: 'google-tts-uk', name: 'Google UK English (Native)', lang: 'en-GB', localService: true, default: false },
+        { voiceURI: 'google-tts-zh', name: 'Google 普通话 (Native)', lang: 'zh-CN', localService: true, default: false }
+      ];
+      synth.getVoices = function() { return dummyVoices; };
+      synth.speak = function(utterance) {
+        if (!utterance) return;
+        var text = utterance.text || '';
+        var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
+        var rate = utterance.rate || 1.0;
+        // 尝试直接调（如果同域/没被跨域策略阻断）
+        if (topShell && typeof topShell.speakText === 'function') {
+           topShell.speakText(text, lang, rate);
+        } else {
+           // 跨域沙盒时，通过常规的 AiPhone 桥发出去！
+           parent.postMessage({
+             source: 'ai-phone-custom-app-frame',
+             type: 'request',
+             frameId: frameId,
+             appId: appId,
+             requestId: frameId + '_tts_' + Math.random(),
+             action: 'voice.tts',
+             payload: { text: text, lang: lang, rate: rate, nativeTts: true }
+           }, '*');
+        }
+      };
+      synth.cancel = function() {
+        if (topShell && typeof topShell.stopSpeak === 'function') {
+           topShell.stopSpeak();
+        } else {
+           parent.postMessage({
+             source: 'ai-phone-custom-app-frame',
+             type: 'request',
+             frameId: frameId,
+             appId: appId,
+             requestId: frameId + '_tts_stop_' + Math.random(),
+             action: 'voice.stopPlayback',
+             payload: { nativeTts: true }
+           }, '*');
+        }
+      };
+      window.speechSynthesis = synth;
+      // 触发一次 voiceschanged 事件，让依赖监听事件初始化的背单词软件立刻就绪
+      setTimeout(function(){
         try { window.dispatchEvent(new Event('voiceschanged')); } catch(e){}
-      }
+      }, 100);
     } catch(e) {}
   })();
   // 判「有没有渲染出东西」不能靠 getBoundingClientRect：沙盒 iframe 在某些容器里
@@ -1510,6 +1539,11 @@ export function CustomAppRunner({
       return { ok: true };
     }
     if (action === "voice.stopPlayback") {
+      if (record.nativeTts && typeof window !== "undefined" && "AndroidShell" in window) {
+        // @ts-expect-error 壳内注入
+        window.AndroidShell.stopSpeak();
+        return { ok: true };
+      }
       requirePermission("voice.tts");
       const entry = frameAudioChannelsRef.current.get(normalizeFrameAudioChannelName(record.channel));
       if (entry) {
@@ -1538,6 +1572,16 @@ export function CustomAppRunner({
       return readCustomAppVoiceProfiles(app, record);
     }
     if (action === "voice.tts") {
+      // 如果声明使用原生 TTS，直接透传给真机外壳
+      if (record.nativeTts && typeof window !== "undefined" && "AndroidShell" in window) {
+        // @ts-expect-error 壳内注入
+        const result = window.AndroidShell.speakText(
+          String(record.text ?? ""),
+          String(record.lang ?? "en-US"),
+          Number(record.rate ?? 1.0)
+        );
+        return { ok: true, detail: result };
+      }
       requirePermission("voice.tts");
       return synthesizeCustomAppSpeech(app, record);
     }
