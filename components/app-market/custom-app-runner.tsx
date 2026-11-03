@@ -221,36 +221,44 @@ html, body { min-height: 100%; }
         var text = utterance.text || '';
         var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
         var rate = utterance.rate || 1.0;
-        // 尝试直接调（如果同域/没被跨域策略阻断）
-        if (topShell && typeof topShell.speakText === 'function') {
-           topShell.speakText(text, lang, rate);
-        } else {
-           // 跨域沙盒时，通过常规的 AiPhone 桥发出去！
-           parent.postMessage({
-             source: 'ai-phone-custom-app-frame',
-             type: 'request',
-             frameId: frameId,
-             appId: appId,
-             requestId: frameId + '_tts_' + Math.random(),
-             action: 'voice.tts',
-             payload: { text: text, lang: lang, rate: rate, nativeTts: true }
-           }, '*');
+        
+        try {
+           if (topShell && typeof topShell.speakText === 'function') {
+             topShell.speakText(text, lang, rate);
+             return;
+           }
+        } catch(e) {
+           // DOMException: Blocked a frame with origin "null" from accessing a cross-origin frame.
         }
+        
+        // 跨域沙盒时，通过常规的 AiPhone 桥发出去！
+        parent.postMessage({
+          source: 'ai-phone-custom-app-frame',
+          type: 'request',
+          frameId: frameId,
+          appId: appId,
+          requestId: frameId + '_tts_' + Math.random(),
+          action: 'voice.tts',
+          payload: { text: text, lang: lang, rate: rate, nativeTts: true }
+        }, '*');
       };
       synth.cancel = function() {
-        if (topShell && typeof topShell.stopSpeak === 'function') {
-           topShell.stopSpeak();
-        } else {
-           parent.postMessage({
-             source: 'ai-phone-custom-app-frame',
-             type: 'request',
-             frameId: frameId,
-             appId: appId,
-             requestId: frameId + '_tts_stop_' + Math.random(),
-             action: 'voice.stopPlayback',
-             payload: { nativeTts: true }
-           }, '*');
-        }
+        try {
+           if (topShell && typeof topShell.stopSpeak === 'function') {
+             topShell.stopSpeak();
+             return;
+           }
+        } catch(e) {}
+        
+        parent.postMessage({
+          source: 'ai-phone-custom-app-frame',
+          type: 'request',
+          frameId: frameId,
+          appId: appId,
+          requestId: frameId + '_tts_stop_' + Math.random(),
+          action: 'voice.stopPlayback',
+          payload: { nativeTts: true }
+        }, '*');
       };
       window.speechSynthesis = synth;
       // 触发一次 voiceschanged 事件，让依赖监听事件初始化的背单词软件立刻就绪
