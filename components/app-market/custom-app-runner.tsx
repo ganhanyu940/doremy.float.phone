@@ -1568,13 +1568,22 @@ export function CustomAppRunner({
     if (action === "voice.tts") {
       // 如果声明使用原生 TTS，直接透传给真机外壳
       if (record.nativeTts && typeof window !== "undefined" && "AndroidShell" in window) {
-        // @ts-expect-error 壳内注入
-        const result = window.AndroidShell.speakText(
-          String(record.text ?? ""),
-          String(record.lang ?? "en-US"),
-          Number(record.rate ?? 1.0)
-        );
-        return { ok: true, detail: result };
+        try {
+          // @ts-expect-error 壳内注入
+          const result = window.AndroidShell.speakText(
+            String(record.text ?? ""),
+            String(record.lang ?? "en-US"),
+            Number(record.rate ?? 1.0)
+          );
+          // 在原生桥调用成功但内部报错时，把错误打到控制台帮助排查
+          if (typeof result === "string" && result.includes('"ok":false')) {
+            console.warn("Native TTS failed:", result);
+          }
+          return { ok: true, detail: result };
+        } catch (err) {
+          console.error("Native TTS bridge error:", err);
+          return { ok: false, error: String(err) };
+        }
       }
       requirePermission("voice.tts");
       return synthesizeCustomAppSpeech(app, record);
