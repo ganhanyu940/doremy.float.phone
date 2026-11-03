@@ -222,16 +222,9 @@ html, body { min-height: 100%; }
         var lang = utterance.lang || (utterance.voice && utterance.voice.lang) || 'en-US';
         var rate = utterance.rate || 1.0;
         
-        try {
-           if (topShell && typeof topShell.speakText === 'function') {
-             topShell.speakText(text, lang, rate);
-             return;
-           }
-        } catch(e) {
-           // DOMException: Blocked a frame with origin "null" from accessing a cross-origin frame.
-        }
-        
-        // 跨域沙盒时，通过常规的 AiPhone 桥发出去！
+        // 【关键修复】不要在 iframe 内试图直接调用 window.parent.AndroidShell.speakText！
+        // 即使 allow-same-origin 允许访问 parent，安全上下文限制也会导致跨帧调用 Java 接口静默失效。
+        // 全部强制走 postMessage 代理，由主页面的 React 层代为调用原生桥接。
         parent.postMessage({
           source: 'ai-phone-custom-app-frame',
           type: 'request',
@@ -243,13 +236,6 @@ html, body { min-height: 100%; }
         }, '*');
       };
       synth.cancel = function() {
-        try {
-           if (topShell && typeof topShell.stopSpeak === 'function') {
-             topShell.stopSpeak();
-             return;
-           }
-        } catch(e) {}
-        
         parent.postMessage({
           source: 'ai-phone-custom-app-frame',
           type: 'request',
