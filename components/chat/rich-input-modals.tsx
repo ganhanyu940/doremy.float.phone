@@ -164,7 +164,12 @@ export function PhotoInputModal({ onSend, onClose }: PhotoInputModalProps) {
                         className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1"
                     >取消</button>
                     <button
-                        onClick={() => { if (canSend) onSend(desc.trim(), imageDataUrl!); }}
+                        onClick={() => {
+                            if (canSend) {
+                                onSend(desc.trim(), imageDataUrl!);
+                                onClose();
+                            }
+                        }}
                         disabled={!canSend}
                         className="ui-btn ui-btn-success flex-1"
                     >发送</button>
@@ -264,7 +269,10 @@ export function RedPacketModal({ mode, isGroup, onSend, onClose }: RedPacketModa
                             className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1"
                         >取消</button>
                         <button
-                            onClick={handleSend}
+                            onClick={() => {
+                                handleSend();
+                                onClose();
+                            }}
                             disabled={!parseFloat(amount)}
                             className="flex-1 py-2.5 rounded-lg border-none text-white ts-14 font-semibold"
                             style={{
@@ -315,7 +323,12 @@ export function LocationInputModal({ onSend, onClose }: LocationInputModalProps)
                         className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1"
                     >取消</button>
                     <button
-                        onClick={() => { if (loc.trim()) onSend(loc.trim()); }}
+                        onClick={() => {
+                            if (loc.trim()) {
+                                onSend(loc.trim());
+                                onClose();
+                            }
+                        }}
                         disabled={!loc.trim()}
                         className="ui-btn ui-btn-success flex-1"
                     >发送</button>
@@ -355,7 +368,12 @@ export function TextPhotoModal({ onSend, onClose }: TextPhotoModalProps) {
                 <div className="flex gap-3 w-full">
                     <button onClick={onClose} className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1">取消</button>
                     <button
-                        onClick={() => { if (text.trim()) onSend(text.trim()); }}
+                        onClick={() => {
+                            if (text.trim()) {
+                                onSend(text.trim());
+                                onClose();
+                            }
+                        }}
                         disabled={!text.trim()}
                         className="ui-btn ui-btn-success flex-1"
                     >发送</button>
@@ -379,6 +397,7 @@ export function SystemInstructionModal({ onSend, onClose }: SystemInstructionMod
     const submit = () => {
         if (!trimmed) return;
         onSend(trimmed);
+        onClose();
     };
 
     return (
@@ -633,7 +652,7 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         ? !!manualText.trim()
         : useShellRecorder
             ? (!!finalText.trim() || !!audioDataUrl)
-            : state === "done" && !!finalText.trim();
+            : state === "done" && !!finalText.trim() || !!audioDataUrl;
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -699,9 +718,14 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
                     <button
                         onClick={() => {
                             if (!canSend) return;
-                            if (inputMode === "text") { onSend(manualText.trim()); return; }
+                            if (inputMode === "text") {
+                                onSend(manualText.trim());
+                                onClose();
+                                return;
+                            }
                             // 只录到音、没识别出文字时也要能发：给气泡一个非空文本兜底
                             onSend(finalText.trim() || (audioDataUrl ? "（语音）" : ""), audioDataUrl || undefined);
+                            onClose();
                         }}
                         disabled={!canSend}
                         className="ui-btn ui-btn-success flex-1"
