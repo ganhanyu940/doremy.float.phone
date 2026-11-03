@@ -641,6 +641,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun injectTtsPolyfill() {
         if (!::webView.isInitialized) return
+        // 注意：这里的注入是给宿主 WebView（主环境）用的；
+        // 第三方 App 的 iframe（沙盒域）由于安全策略拿不到这个 window.AndroidShell，
+        // 我们在前端 custom-app-runner.tsx 里做了 postMessage 代理兜底。
         val js = """
             (function() {
                 if (window.__floatshell_tts_injected) return;
