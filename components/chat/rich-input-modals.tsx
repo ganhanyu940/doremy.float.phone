@@ -70,7 +70,7 @@ export function PhotoInputModal({ onSend, onClose }: PhotoInputModalProps) {
                 )}
                 <div className="mt-3 flex gap-3 w-full">
                     <button onClick={onClose} className="ui-btn ui-btn-ghost ui-btn-bordered-ghost flex-1">取消</button>
-                    <button onClick={() => { if (canSend) onSend(desc.trim(), imageDataUrls, mergeForDisplay); }} disabled={!canSend} className="ui-btn ui-btn-success flex-1 disabled:opacity-50">{reading ? "读取中…" : `发送 ${imageDataUrls.length ? `(${imageDataUrls.length})` : ""}`}</button>
+                    <button onClick={() => { if (canSend) { onSend(desc.trim(), imageDataUrls, mergeForDisplay); onClose(); } }} disabled={!canSend} className="ui-btn ui-btn-success flex-1 disabled:opacity-50">{reading ? "读取中…" : `发送 ${imageDataUrls.length ? `(${imageDataUrls.length})` : ""}`}</button>
                 </div>
             </div>
         </div>

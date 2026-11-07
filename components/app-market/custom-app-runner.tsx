@@ -201,6 +201,59 @@ html, body { min-height: 100%; }
     var reason = event && event.reason;
     reportError('未处理的 Promise 拒绝：' + String((reason && reason.message) || reason));
   });
+
+  // ── Web Speech TTS 自动垫片（支持 HelloWord 等背单词 App 原生朗读）──
+  (function(){
+    try {
+      var topShell = (window.parent && window.parent.AndroidShell) || (window.top && window.top.AndroidShell) || window.AndroidShell;
+      if (topShell && typeof topShell.speakText === 'function') {
+        var dummyVoices = [
+          { voiceURI: 'google-tts-us', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
+          { voiceURI: 'google-tts-zh', name: 'Google Chinese (Native)', lang: 'zh-CN', localService: true, default: false }
+        ];
+        if (!window.speechSynthesis) {
+          window.speechSynthesis = {
+            speaking: false,
+            paused: false,
+            pending: false,
+            onvoiceschanged: null,
+            getVoices: function() { return dummyVoices; },
+            speak: function(utterance) {
+              if (!utterance || !utterance.text) return;
+              var lang = utterance.lang || 'en-US';
+              var rate = utterance.rate || 1.0;
+              window.speechSynthesis.speaking = true;
+              topShell.speakText(utterance.text, lang, rate);
+              setTimeout(function(){
+                window.speechSynthesis.speaking = false;
+                if (typeof utterance.onend === 'function') utterance.onend({ type: 'end' });
+              }, Math.max(800, utterance.text.length * 80));
+            },
+            cancel: function() {
+              window.speechSynthesis.speaking = false;
+              if (typeof topShell.stopSpeaking === 'function') topShell.stopSpeaking();
+            },
+            pause: function() {},
+            resume: function() {}
+          };
+        }
+        if (!window.SpeechSynthesisUtterance) {
+          window.SpeechSynthesisUtterance = function(text) {
+            this.text = text || '';
+            this.lang = 'en-US';
+            this.rate = 1.0;
+            this.pitch = 1.0;
+            this.volume = 1.0;
+            this.onend = null;
+            this.onerror = null;
+            this.onstart = null;
+          };
+        }
+      }
+    } catch(e) {
+      console.warn('TTS polyfill injection skipped:', e);
+    }
+  })();
   // 判「有没有渲染出东西」不能靠 getBoundingClientRect：沙盒 iframe 在某些容器里
   // 会被跳过布局，元素尺寸全是 0，正常应用也会被误判成白屏。改看 DOM 本身。
   function ownText(el){
