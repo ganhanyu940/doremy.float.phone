@@ -75,13 +75,20 @@ export async function startCallRecording(): Promise<ActiveCallRecording> {
     // 优先 opus：体积小、转写接口普遍支持
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
         .find(m => { try { return MediaRecorder.isTypeSupported(m); } catch { return false; } });
-    const recorder = mime
-        ? new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32_000 })
-        : new MediaRecorder(stream);
+    let recorder: MediaRecorder;
+    try {
+        recorder = mime
+            ? new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32_000 })
+            : new MediaRecorder(stream);
+    } catch (error) {
+        stream.getTracks().forEach(track => track.stop());
+        throw error;
+    }
 
     const chunks: Blob[] = [];
     let finished = false;
     let cancelled = false;
+    let finishedBlob: Blob | null = null;
     let resolveStop: ((blob: Blob | null) => void) | null = null;
 
     const releaseMic = () => {
@@ -96,9 +103,10 @@ export async function startCallRecording(): Promise<ActiveCallRecording> {
         finished = true;
         window.clearTimeout(maxTimer);
         releaseMic();
-        if (cancelled) { resolveStop?.(null); return; }
+        if (cancelled) { finishedBlob = null; resolveStop?.(null); return; }
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-        resolveStop?.(blob.size > 0 ? blob : null);
+        finishedBlob = blob.size > 0 ? blob : null;
+        resolveStop?.(finishedBlob);
     };
     recorder.onerror = () => {
         if (finished) return;
@@ -112,12 +120,18 @@ export async function startCallRecording(): Promise<ActiveCallRecording> {
         try { recorder.stop(); } catch { /* ignore */ }
     }, MAX_RECORDING_MS);
 
-    recorder.start();
+    try {
+        recorder.start();
+    } catch (error) {
+        window.clearTimeout(maxTimer);
+        releaseMic();
+        throw error;
+    }
 
     return {
         stop: () => new Promise<Blob | null>(resolve => {
             resolveStop = resolve;
-            if (finished) { resolve(null); return; }
+            if (finished) { resolve(cancelled ? null : finishedBlob); return; }
             try { recorder.stop(); } catch { recorder.onstop?.(new Event("stop") as never); }
         }),
         cancel: () => {

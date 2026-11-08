@@ -49,6 +49,8 @@ export function useHoldToTalk(options: HoldToTalkOptions): HoldToTalkHandle {
     const recordingRef = useRef<ActiveCallRecording | null>(null);
     const startedAtRef = useRef(0);
     const startingRef = useRef(false);
+    // 权限弹窗或慢设备上，松手可能早于 getUserMedia 返回；不能让录音在松手后继续。
+    const releasedWhileStartingRef = useRef(false);
     const mountedRef = useRef(true);
     const optionsRef = useRef(options);
     optionsRef.current = options;
@@ -74,21 +76,45 @@ export function useHoldToTalk(options: HoldToTalkOptions): HoldToTalkHandle {
         if (!optionsRef.current.canStart()) return;
         setError("");
         startingRef.current = true;
+        releasedWhileStartingRef.current = false;
         try {
             const recording = await startCallRecording();
             startingRef.current = false;
             if (!mountedRef.current) { recording.cancel(); return; }
+            if (releasedWhileStartingRef.current) {
+                releasedWhileStartingRef.current = false;
+                recording.cancel();
+                fail("麦克风刚启动就松手了，请按住按钮，看到录音中再说话");
+                return;
+            }
             recordingRef.current = recording;
             startedAtRef.current = Date.now();
             setRecState("recording");
             optionsRef.current.onRecordingStart?.();
         } catch (e) {
             startingRef.current = false;
+            releasedWhileStartingRef.current = false;
             fail(e instanceof Error ? e.message : String(e));
         }
     }, [fail]);
 
+    const handleCancel = useCallback(() => {
+        if (startingRef.current) {
+            releasedWhileStartingRef.current = true;
+            return;
+        }
+        const recording = recordingRef.current;
+        if (!recording) return;
+        recordingRef.current = null;
+        recording.cancel();
+        fail("录音已取消，请重新按住按钮");
+    }, [fail]);
+
     const handleRelease = useCallback(async () => {
+        if (startingRef.current && !recordingRef.current) {
+            releasedWhileStartingRef.current = true;
+            return;
+        }
         const recording = recordingRef.current;
         if (!recording) return;
         recordingRef.current = null;
@@ -124,7 +150,7 @@ export function useHoldToTalk(options: HoldToTalkOptions): HoldToTalkHandle {
         pressHandlers: {
             onPointerDown: (e) => {
                 e.preventDefault();
-                try { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+                try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
                 void handlePress();
             },
             onPointerUp: (e) => {
@@ -133,8 +159,8 @@ export function useHoldToTalk(options: HoldToTalkOptions): HoldToTalkHandle {
             },
             onPointerCancel: (e) => {
                 e.preventDefault();
-                void handleRelease();
-            },
+                handleCancel();
+            }
             onContextMenu: (e) => { e.preventDefault(); },
         },
     };

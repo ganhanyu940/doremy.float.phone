@@ -698,6 +698,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onToggleTheaterMode: () => void;
     onCloseTheaterMode: () => void;
     onOpenRichModal: (modal: RichModalKind) => void;
+    onSendCameraPhoto: (dataUrl: string) => void;
     onOpenCustomPlusAction: (action: RegisteredCustomAppChatPlusAction) => void;
     onStartVideoCall: () => void;
     onStartVoiceCall: () => void;
@@ -729,6 +730,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
     onToggleTheaterMode,
     onCloseTheaterMode,
     onOpenRichModal,
+    onSendCameraPhoto,
     onOpenCustomPlusAction,
     onStartVideoCall,
     onStartVoiceCall,
@@ -739,6 +741,7 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
 }, ref) {
     const [inputText, setInputText] = useState("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const cameraInputRef = useRef<HTMLInputElement | null>(null);
     const [plusMenuOrder, setPlusMenuOrder] = useState<string[]>([]);
     useEffect(() => {
         try {
@@ -985,6 +988,17 @@ const ChatTextInputBar = memo(forwardRef<ChatTextInputHandle, {
             />
 
             <div className="chat-input-actions">
+                <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={event => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => { if (typeof reader.result === "string") onSendCameraPhoto(reader.result); };
+                    reader.readAsDataURL(file);
+                }} />
+                <button type="button" onClick={() => cameraInputRef.current?.click()} disabled={inputLocked || isGenerating} className="ui-bare-btn text-[var(--c-text)]" aria-label="拍照发送" title="拍照发送">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>
+                </button>
                 <button
                     onClick={onToggleOfflineMode}
                     className="ui-bare-btn text-[var(--c-text)] chat-offline-toggle"
@@ -3813,6 +3827,24 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
         setMessages(prev => [...prev, newMsg]);
         setPendingGenerate(true);
         return true;
+    };
+
+    const sendCameraPhoto = async (dataUrl: string, fromOffline: boolean): Promise<void> => {
+        try {
+            if (isGenerating || isOfflineGenerating) { showChatToast("请先等待当前回复结束"); return; }
+            if (!ensureGroupSpeakPermission()) return;
+            const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,/.exec(dataUrl);
+            if (!match) throw new Error("照片格式无效");
+            const stored = await storeMediaBase64(dataUrl.slice(match[0].length), match[1]);
+            if (!sendRichMessage("image", {}, "", stored.ref)) return;
+            if (fromOffline) {
+                setOfflineMode(false);
+                kvSet(CHAT_OFFLINE_MODE_PREFIX + session.id, "0");
+                showChatToast("照片已发送到线上聊天；线下剧情记录暂不支持图片");
+            }
+        } catch (error) {
+            showChatToast("拍照发送失败：" + (error instanceof Error ? error.message : String(error)));
+        }
     };
 
     const sendSystemInstruction = (content: string): boolean => {
@@ -7091,7 +7123,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                     onToggleEmojiPanel={() => { setShowEmojiPanel(!showEmojiPanel); setShowStickerPanel(false); setShowPlusMenu(false); }}
                     onSendText={handleOfflineSend}
                     onStopGeneration={clearOfflineGeneration}
-                    onSendPhoto={(dataUrl) => handleSendPhoto("", [dataUrl], false)}
+                    onSendPhoto={(dataUrl) => { void sendCameraPhoto(dataUrl, true); }}
                 />
             ) : (
             <ChatTextInputBar
@@ -7119,6 +7151,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
 	                onToggleTheaterMode={toggleTheaterMode}
 	                onCloseTheaterMode={closeTheaterMode}
 	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
+                onSendCameraPhoto={(dataUrl) => { void sendCameraPhoto(dataUrl, false); }}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
                 onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : (resolveSessionCharacterId(session) || ""), kind: "video", initiator: "user" }); }}
                 onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); startCall({ sessionId: session.id, characterId: session.isGroup ? "" : (resolveSessionCharacterId(session) || ""), kind: "voice", initiator: "user" }); }}
