@@ -666,11 +666,36 @@ function StatusClock() {
   return <span className="status-time">{label}</span>;
 }
 
+/**
+ * 电池状态管理器的浏览器接口（Battery Status API）。
+ *
+ * 只有部分浏览器/WebView 实现它，TypeScript 的 lib.dom 里也没有这份定义，
+ * 所以这里自己声明最小可用形状——而不是用 any 绕过类型检查：
+ * 校验脚本对 any 是硬错误，一个 any 就能让整次构建失败、新版发不出去。
+ */
+interface BatteryManagerLike {
+  level: number;
+  addEventListener: (type: "levelchange", listener: () => void) => void;
+  removeEventListener: (type: "levelchange", listener: () => void) => void;
+}
+
+/** 拿到电量管理器；浏览器不支持时返回 null，调用方据此退回默认显示。 */
+function getBatteryManager(): Promise<BatteryManagerLike> | null {
+  if (typeof navigator === "undefined") return null;
+  const api = (navigator as Navigator & { getBattery?: () => Promise<BatteryManagerLike> }).getBattery;
+  if (typeof api !== "function") return null;
+  try {
+    return api.call(navigator);
+  } catch {
+    return null;
+  }
+}
+
 function StatusBattery() {
   const [level, setLevel] = useState<number | null>(null);
 
   useEffect(() => {
-    let battery: any = null;
+    let battery: BatteryManagerLike | null = null;
     let disposed = false;
 
     const updateBattery = () => {
@@ -678,19 +703,17 @@ function StatusBattery() {
       setLevel(Math.round((battery.level || 0) * 100));
     };
 
-    if (typeof navigator !== "undefined" && "getBattery" in navigator) {
-      (navigator as any).getBattery().then((b: any) => {
-        if (disposed) return;
-        battery = b;
-        updateBattery();
-        battery.addEventListener("levelchange", updateBattery);
-      }).catch(() => {});
-    }
+    getBatteryManager()?.then((manager) => {
+      if (disposed) return;
+      battery = manager;
+      updateBattery();
+      battery.addEventListener("levelchange", updateBattery);
+    }).catch(() => {});
 
     return () => {
       disposed = true;
       if (battery) {
-        try { battery.removeEventListener("levelchange", updateBattery); } catch (_) {}
+        try { battery.removeEventListener("levelchange", updateBattery); } catch { /* 卸载时忽略 */ }
       }
     };
   }, []);
