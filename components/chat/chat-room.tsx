@@ -7091,6 +7091,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                     onToggleEmojiPanel={() => { setShowEmojiPanel(!showEmojiPanel); setShowStickerPanel(false); setShowPlusMenu(false); }}
                     onSendText={handleOfflineSend}
                     onStopGeneration={clearOfflineGeneration}
+                    onSendPhoto={(dataUrl) => handleSendPhoto("", [dataUrl], false)}
                 />
             ) : (
             <ChatTextInputBar
