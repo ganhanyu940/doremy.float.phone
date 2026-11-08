@@ -160,7 +160,7 @@ export function useHoldToTalk(options: HoldToTalkOptions): HoldToTalkHandle {
             onPointerCancel: (e) => {
                 e.preventDefault();
                 handleCancel();
-            }
+            },
             onContextMenu: (e) => { e.preventDefault(); },
         },
     };
