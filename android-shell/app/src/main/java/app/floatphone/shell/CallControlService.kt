@@ -97,8 +97,7 @@ class CallControlService : AccessibilityService() {
         updateForegroundPackage(pkg)
         // 原有网页感知与其他壳功能继续收到前台应用变化事件。
         ShellBus.dispatchOverlayEvent("foregroundApp", JSONObject().put("package", pkg))
-        // 锁机浮层靠这个判断「现在这一屏要不要盖」：整机锁要盖住除豁免外的一切，应用锁只盖指定那几个
-        LockdownService.onForegroundApp(pkg)
+
     }
 
     private fun updateForegroundPackage(pkg: String) {
