@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 拍照直发的临时目录：系统相机把照片写进应用缓存，网页拿到 URI 后立刻读成 dataURL。
+     不暴露外部存储，也不长期保留：相机回传后由网页按需清理。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="camera-capture" path="camera-capture/" />
+</paths>

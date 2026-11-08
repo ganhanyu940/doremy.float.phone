@@ -263,5 +263,17 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/shared_video_paths" />
         </provider>
+        <!-- 拍照直发：网页 input capture 时直启系统相机，照片先写到应用缓存再由
+             FileProvider 授权给相机 App。缺这条声明时 FileProvider.getUriForFile 会抛
+             IllegalArgumentException，表现为「点拍照没反应」。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.camera"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/camera_paths" />
+        </provider>
     </application>
 </manifest>

@@ -155,6 +155,7 @@ class MainActivity : AppCompatActivity() {
     private var recoveryOverlay: View? = null
     private var recoveryBoot = false
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraUri: Uri? = null
 
     // Native custom view used by HTML5 video players embedded in the WebView.
     private var webVideoCustomView: View? = null
@@ -258,7 +259,10 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         val callback = filePathCallback ?: return@registerForActivityResult
         filePathCallback = null
-        callback.onReceiveValue(collectChosenUris(result))
+        val selected = collectChosenUris(result)
+        val captured = pendingCameraUri
+        pendingCameraUri = null
+        callback.onReceiveValue(if (result.resultCode == android.app.Activity.RESULT_OK && selected.isEmpty() && captured != null) arrayOf(captured) else selected)
     }
 
     /**
@@ -1259,7 +1263,23 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             ): Boolean {
                 filePathCallback?.onReceiveValue(emptyArray())
                 filePathCallback = callback
+                pendingCameraUri = null
                 return runCatching {
+                    val wantsCamera = params.isCaptureEnabled && params.acceptTypes.any {
+                        it.equals("image/*", ignoreCase = true) || it.startsWith("image/", ignoreCase = true)
+                    }
+                    if (wantsCamera) {
+                        val outputDir = File(cacheDir, "camera-capture").apply { mkdirs() }
+                        val output = File.createTempFile("chat-photo-", ".jpg", outputDir)
+                        val uri = FileProvider.getUriForFile(this@MainActivity, "${packageName}.camera", output)
+                        pendingCameraUri = uri
+                        val capture = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                            putExtra(MediaStore.EXTRA_OUTPUT, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        }
+                        fileChooserLauncher.launch(capture)
+                        return@runCatching true
+                    }
                     val intent = params.createIntent()
                     // createIntent() 一般已按 params.mode 带上 EXTRA_ALLOW_MULTIPLE；个别 WebView
                     // 版本拿不到 multiple 模式，网页多选会退化成单选，这里显式兜一次。
@@ -1268,7 +1288,10 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                     }
                     fileChooserLauncher.launch(intent); true
                 }.getOrElse {
-                    filePathCallback = null; false
+                    pendingCameraUri = null
+                    filePathCallback = null
+                    callback.onReceiveValue(emptyArray())
+                    false
                 }
             }
         }
