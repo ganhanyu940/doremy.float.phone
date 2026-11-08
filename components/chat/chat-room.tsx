@@ -1112,6 +1112,7 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onToggleEmojiPanel: () => void;
     onSendText: (text: string) => boolean;
     onStopGeneration: () => void;
+    onSendPhoto?: (imageDataUrl: string) => void;
 }>(function OfflineTextInputBar({
     isOfflineGenerating,
     isSpectator,
@@ -1122,10 +1123,12 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onToggleEmojiPanel,
     onSendText,
     onStopGeneration,
+    onSendPhoto,
 }, ref) {
     const [inputText, setInputText] = useState("");
     const inputTextRef = useRef("");
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const offlineCameraInputRef = useRef<HTMLInputElement | null>(null);
 
     const resetTextareaHeight = () => {
         if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -1226,6 +1229,41 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
                         <path d="M8 13h5" />
                     </svg>
                 </button>
+                {onSendPhoto && (
+                    <>
+                        <input
+                            ref={offlineCameraInputRef}
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            className="hidden"
+                            onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                    if (typeof reader.result === "string") onSendPhoto(reader.result);
+                                };
+                                reader.readAsDataURL(file);
+                                e.target.value = "";
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => offlineCameraInputRef.current?.click()}
+                            disabled={isSpectator || isOfflineGenerating}
+                            className="ui-bare-btn text-[var(--c-text)]"
+                            style={isSpectator ? { opacity: 0.35 } : undefined}
+                            aria-label="拍照发送"
+                            title="拍照发送"
+                        >
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                                <circle cx="12" cy="13" r="4" />
+                            </svg>
+                        </button>
+                    </>
+                )}
                 <button
                     onClick={onToggleEmojiPanel}
                     disabled={isSpectator}

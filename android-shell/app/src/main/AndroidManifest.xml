@@ -190,6 +190,14 @@
             android:exported="false"
             android:foregroundServiceType="specialUse" />
 
+        <!-- 锁机浮层：角色把手机收走时盖住真机（见 LockdownService 头部的边界说明）。
+             用 specialUse：它不做媒体播放，只是一个用户看得见、随时能自己解除的浮层。
+             需要 SYSTEM_ALERT_WINDOW（浮窗权限）与无障碍（判断当前在哪个 App）。 -->
+        <service
+            android:name=".LockdownService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+
         <!-- 截屏悬浮球：随手点一下就能截屏发给角色（你自己发起，不是角色查岗）。
              点击后交给 CheckInService 走同一套预览与审批。 -->
         <service

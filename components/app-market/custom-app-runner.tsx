@@ -2061,8 +2061,8 @@ export function CustomAppRunner({
           ref={iframeRef}
           title={app.name}
           className="custom-app-runner-frame"
-          sandbox="allow-scripts allow-downloads"
-          allow="autoplay"
+          sandbox="allow-scripts allow-downloads allow-same-origin"
+          allow="autoplay; microphone; camera"
           onLoad={syncHostedSafeArea}
           srcDoc={srcDoc}
         />
