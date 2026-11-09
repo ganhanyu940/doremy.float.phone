@@ -1132,6 +1132,8 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onSendText: (text: string) => boolean;
     onStopGeneration: () => void;
     onSendPhoto?: (imageDataUrl: string) => void;
+    /** 提示条由聊天室提供：拍照失败/取消时要让用户看见原因，不能静默 */
+    onNotify?: (message: string) => void;
 }>(function OfflineTextInputBar({
     isOfflineGenerating,
     isSpectator,
@@ -1143,6 +1145,7 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
     onSendText,
     onStopGeneration,
     onSendPhoto,
+    onNotify,
 }, ref) {
     const [inputText, setInputText] = useState("");
     const inputTextRef = useRef("");
@@ -1258,13 +1261,23 @@ const OfflineTextInputBar = memo(forwardRef<OfflineTextInputHandle, {
                             className="hidden"
                             onChange={(e) => {
                                 const file = e.target.files?.[0];
-                                if (!file) return;
+                                // 清空 value 让同一张照片可以再次选择；否则第二次点拍照不触发 change
+                                e.target.value = "";
+                                if (!file) {
+                                    // 壳侧回传空数组时也会走到这里：明确提示，不再静默
+                                    onNotify?.("没有拿到照片，请重拍一次");
+                                    return;
+                                }
                                 const reader = new FileReader();
                                 reader.onload = () => {
-                                    if (typeof reader.result === "string") onSendPhoto(reader.result);
+                                    if (typeof reader.result === "string" && reader.result.length > 64) {
+                                        onSendPhoto(reader.result);
+                                    } else {
+                                        onNotify?.("照片内容为空，请重拍一次");
+                                    }
                                 };
+                                reader.onerror = () => onNotify?.("读取照片失败，请重试");
                                 reader.readAsDataURL(file);
-                                e.target.value = "";
                             }}
                         />
                         <button
@@ -7128,6 +7141,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                     onSendText={handleOfflineSend}
                     onStopGeneration={clearOfflineGeneration}
                     onSendPhoto={(dataUrl) => { void sendCameraPhoto(dataUrl, true); }}
+                    onNotify={showChatToast}
                 />
             ) : (
             <ChatTextInputBar

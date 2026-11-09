@@ -262,13 +262,17 @@ class MainActivity : AppCompatActivity() {
         val selected = collectChosenUris(result)
         val captured = pendingCameraUri
         pendingCameraUri = null
-        if (result.resultCode == android.app.Activity.RESULT_OK && selected.isEmpty() && captured != null) {
+        if (captured != null && selected.isEmpty() && result.resultCode == android.app.Activity.RESULT_OK) {
             // 相机回传后真正可用的前提是文件里有内容。部分机型的相机不认 EXTRA_OUTPUT，
             // 协议上「成功」但文件是 0 字节，网页读出来就是空图 —— 表现为拍完没反应。
             // 这时用返回结果里的 Bitmap 兜底写盘（缩略图，但至少有图）。
             val ok = ensureCapturedFileHasContent(captured, result)
             callback.onReceiveValue(if (ok) arrayOf(captured) else emptyArray())
             return@registerForActivityResult
+        }
+        if (captured != null && selected.isEmpty()) {
+            // 用户取消了拍照：回空是正确行为，但要点出原因，避免和「失败」混为一谈。
+            Toast.makeText(this@MainActivity, "已取消拍照", Toast.LENGTH_SHORT).show()
         }
         callback.onReceiveValue(selected)
     }
@@ -281,19 +285,41 @@ class MainActivity : AppCompatActivity() {
      *   2. 回传 Intent 里的 "data" 缩略图 —— 相机不支持 EXTRA_OUTPUT 时的唯一产物。
      */
     private fun ensureCapturedFileHasContent(uri: Uri, result: ActivityResult): Boolean {
+        // ① 正常路径：EXTRA_OUTPUT 指定的文件里已经有内容
         val target = runCatching {
             contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
         }.getOrDefault(0L)
         if (target > 0L) return true
-        val bitmap = runCatching {
+
+        // ② 少数相机不给 EXTRA_OUTPUT 写盘，但会把图塞进回传 Intent 的 "data" 缩略图
+        val thumbnail = runCatching {
             @Suppress("DEPRECATION")
             result.data?.extras?.get("data") as? Bitmap
-        }.getOrNull() ?: return false
-        return runCatching {
-            contentResolver.openOutputStream(uri)?.use { stream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-            } != null
-        }.getOrDefault(false)
+        }.getOrNull()
+        if (thumbnail != null) {
+            val written = runCatching {
+                contentResolver.openOutputStream(uri)?.use { stream ->
+                    thumbnail.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                } != null
+            }.getOrDefault(false)
+            if (written) return true
+        }
+
+        // ③ 还有一种情况：相机把照片写进了自己返回的 Uri（不是我们给的那个）。
+        //    这时把我们能读到的图复制进目标文件，避免整次拍照白费。
+        val returnedUri = @Suppress("DEPRECATION") result.data?.data
+        if (returnedUri != null && returnedUri != uri) {
+            val copied = runCatching {
+                contentResolver.openInputStream(returnedUri)?.use { input ->
+                    contentResolver.openOutputStream(uri)?.use { output -> input.copyTo(output) }
+                } != null
+            }.getOrDefault(false)
+            if (copied) return true
+        }
+
+        // ④ 确实拿不到图：明确告诉用户，而不是静默吞掉
+        Toast.makeText(this@MainActivity, "相机没有返回照片，请重拍一次", Toast.LENGTH_SHORT).show()
+        return false
     }
 
     /**
