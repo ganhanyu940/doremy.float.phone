@@ -262,7 +262,38 @@ class MainActivity : AppCompatActivity() {
         val selected = collectChosenUris(result)
         val captured = pendingCameraUri
         pendingCameraUri = null
-        callback.onReceiveValue(if (result.resultCode == android.app.Activity.RESULT_OK && selected.isEmpty() && captured != null) arrayOf(captured) else selected)
+        if (result.resultCode == android.app.Activity.RESULT_OK && selected.isEmpty() && captured != null) {
+            // 相机回传后真正可用的前提是文件里有内容。部分机型的相机不认 EXTRA_OUTPUT，
+            // 协议上「成功」但文件是 0 字节，网页读出来就是空图 —— 表现为拍完没反应。
+            // 这时用返回结果里的 Bitmap 兜底写盘（缩略图，但至少有图）。
+            val ok = ensureCapturedFileHasContent(captured, result)
+            callback.onReceiveValue(if (ok) arrayOf(captured) else emptyArray())
+            return@registerForActivityResult
+        }
+        callback.onReceiveValue(selected)
+    }
+
+    /**
+     * 保证拍照产物非空。返回 false 表示这次确实没拿到可用图片，调用方应回空。
+     *
+     * 两种兜底来源（按可靠性排序）：
+     *   1. EXTRA_OUTPUT 指向的文件本身有内容 —— 正常路径；
+     *   2. 回传 Intent 里的 "data" 缩略图 —— 相机不支持 EXTRA_OUTPUT 时的唯一产物。
+     */
+    private fun ensureCapturedFileHasContent(uri: Uri, result: ActivityResult): Boolean {
+        val target = runCatching {
+            contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
+        }.getOrDefault(0L)
+        if (target > 0L) return true
+        val bitmap = runCatching {
+            @Suppress("DEPRECATION")
+            result.data?.extras?.get("data") as? Bitmap
+        }.getOrNull() ?: return false
+        return runCatching {
+            contentResolver.openOutputStream(uri)?.use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+            } != null
+        }.getOrDefault(false)
     }
 
     /**

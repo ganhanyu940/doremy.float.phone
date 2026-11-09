@@ -3835,7 +3835,11 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
             if (!ensureGroupSpeakPermission()) return;
             const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,/.exec(dataUrl);
             if (!match) throw new Error("照片格式无效");
-            const stored = await storeMediaBase64(dataUrl.slice(match[0].length), match[1]);
+            const payload = dataUrl.slice(match[0].length);
+            // 相机没写盘、或网页读到空文件时，dataUrl 会退化成「只有前缀、没有内容」。
+            // 不拦的话会存进一张空白图，用户只觉得「点了没反应」，找不到原因。
+            if (payload.length < 64) throw new Error("没有拿到照片内容，请重拍一次");
+            const stored = await storeMediaBase64(payload, match[1]);
             if (!sendRichMessage("image", {}, "", stored.ref)) return;
             if (fromOffline) {
                 setOfflineMode(false);
