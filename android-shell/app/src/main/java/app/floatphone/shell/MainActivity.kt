@@ -262,17 +262,24 @@ class MainActivity : AppCompatActivity() {
         val selected = collectChosenUris(result)
         val captured = pendingCameraUri
         pendingCameraUri = null
-        if (captured != null && selected.isEmpty() && result.resultCode == android.app.Activity.RESULT_OK) {
-            // 相机回传后真正可用的前提是文件里有内容。部分机型的相机不认 EXTRA_OUTPUT，
-            // 协议上「成功」但文件是 0 字节，网页读出来就是空图 —— 表现为拍完没反应。
-            // 这时用返回结果里的 Bitmap 兜底写盘（缩略图，但至少有图）。
-            val ok = ensureCapturedFileHasContent(captured, result)
-            callback.onReceiveValue(if (ok) arrayOf(captured) else emptyArray())
-            return@registerForActivityResult
-        }
         if (captured != null && selected.isEmpty()) {
-            // 用户取消了拍照：回空是正确行为，但要点出原因，避免和「失败」混为一谈。
-            Toast.makeText(this@MainActivity, "已取消拍照", Toast.LENGTH_SHORT).show()
+            // 关键：不能只看 resultCode 就判定「取消」。
+            // 不少机型（尤其厂商定制相机）明明已经把照片写进 EXTRA_OUTPUT 指定的文件，
+            // 回传时却仍给 RESULT_CANCELED。若在这里直接放弃，用户拍好的照片就白拍了
+            // ——真实表现正是「点了确认，却提示已取消拍照」。
+            // 因此统一以「文件里到底有没有内容」为准，resultCode 只用于最后的提示文案。
+            val ok = ensureCapturedFileHasContent(captured, result)
+            if (ok) {
+                callback.onReceiveValue(arrayOf(captured))
+                return@registerForActivityResult
+            }
+            Toast.makeText(
+                this@MainActivity,
+                if (result.resultCode == android.app.Activity.RESULT_OK) "相机没有返回照片，请重拍一次" else "已取消拍照",
+                Toast.LENGTH_SHORT,
+            ).show()
+            callback.onReceiveValue(emptyArray())
+            return@registerForActivityResult
         }
         callback.onReceiveValue(selected)
     }
