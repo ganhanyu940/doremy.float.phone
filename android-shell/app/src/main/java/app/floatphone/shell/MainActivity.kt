@@ -1265,9 +1265,16 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                 filePathCallback = callback
                 pendingCameraUri = null
                 return runCatching {
-                    val wantsCamera = params.isCaptureEnabled && params.acceptTypes.any {
-                        it.equals("image/*", ignoreCase = true) || it.startsWith("image/", ignoreCase = true)
+                    // 只要图片、且不是多选：网页里这种 input 只有「拍照」按钮（带 capture）。
+                    // 「照片墙」选图走 MODE_OPEN_MULTIPLE，不会被这里截走。
+                    val imageOnly = params.acceptTypes.isNotEmpty() && params.acceptTypes.all { type ->
+                        type.equals("image/*", ignoreCase = true) || type.startsWith("image/", ignoreCase = true)
                     }
+                    val singlePick = params.mode != WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                    // isCaptureEnabled 在部分 ROM/WebView 上恒为 false，只认它会导致
+                    // 「点拍照却打开相册」。因此判定放宽为「单选 + 纯图片」即当拍照处理；
+                    // 选图场景（照片墙 / 多选）走 MODE_OPEN_MULTIPLE，不受影响。
+                    val wantsCamera = imageOnly && singlePick
                     if (wantsCamera) {
                         val outputDir = File(cacheDir, "camera-capture").apply { mkdirs() }
                         val output = File.createTempFile("chat-photo-", ".jpg", outputDir)
@@ -1277,8 +1284,12 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                             putExtra(MediaStore.EXTRA_OUTPUT, uri)
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                         }
-                        fileChooserLauncher.launch(capture)
-                        return@runCatching true
+                        // 设备上没有可用相机 App 时不要静默失败，退回通用选择器
+                        if (capture.resolveActivity(packageManager) != null) {
+                            fileChooserLauncher.launch(capture)
+                            return@runCatching true
+                        }
+                        pendingCameraUri = null
                     }
                     val intent = params.createIntent()
                     // createIntent() 一般已按 params.mode 带上 EXTRA_ALLOW_MULTIPLE；个别 WebView
