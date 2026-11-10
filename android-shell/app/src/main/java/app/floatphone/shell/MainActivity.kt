@@ -155,7 +155,16 @@ class MainActivity : AppCompatActivity() {
     private var recoveryOverlay: View? = null
     private var recoveryBoot = false
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
-    private var pendingCameraUri: Uri? = null
+    /** 一次拍照的产物位置：给网页的 FileProvider URI + 相机真正写入的 MediaStore URI。 */
+    private var pendingCapture: PendingCapture? = null
+
+    private data class PendingCapture(
+        /** 交给网页读取的缓存文件 URI（FileProvider 形式）。 */
+        val targetUri: Uri,
+        val targetFile: File,
+        /** 相机实际写入的相册条目；null 表示设备不支持或创建失败。 */
+        val mediaUri: Uri?,
+    )
 
     // Native custom view used by HTML5 video players embedded in the WebView.
     private var webVideoCustomView: View? = null
@@ -260,19 +269,18 @@ class MainActivity : AppCompatActivity() {
         val callback = filePathCallback ?: return@registerForActivityResult
         filePathCallback = null
         val selected = collectChosenUris(result)
-        val captured = pendingCameraUri
-        pendingCameraUri = null
-        if (captured != null && selected.isEmpty()) {
+        val capture = pendingCapture
+        pendingCapture = null
+        if (capture != null && selected.isEmpty()) {
             // 关键：不能只看 resultCode 就判定「取消」。
-            // 不少机型（尤其厂商定制相机）明明已经把照片写进 EXTRA_OUTPUT 指定的文件，
-            // 回传时却仍给 RESULT_CANCELED。若在这里直接放弃，用户拍好的照片就白拍了
-            // ——真实表现正是「点了确认，却提示已取消拍照」。
-            // 因此统一以「文件里到底有没有内容」为准，resultCode 只用于最后的提示文案。
-            val ok = ensureCapturedFileHasContent(captured, result)
+            // 不少机型明明已经把照片写进了输出目标，回传时却仍给 RESULT_CANCELED。
+            // 因此统一以「到底有没有拿到图」为准，resultCode 只用于最后的提示文案。
+            val ok = ensureCapturedFileHasContent(capture, result)
             if (ok) {
-                callback.onReceiveValue(arrayOf(captured))
+                callback.onReceiveValue(arrayOf(capture.targetUri))
                 return@registerForActivityResult
             }
+            discardCameraMediaEntry(capture.mediaUri)
             Toast.makeText(
                 this@MainActivity,
                 if (result.resultCode == android.app.Activity.RESULT_OK) "相机没有返回照片，请重拍一次" else "已取消拍照",
@@ -285,27 +293,47 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 往拍照目标文件写入一个 1×1 的合法 JPEG。
+     * 在系统相机相册里建一个待写入条目，交给相机作为输出目标。
      *
-     * 为什么需要：部分厂商相机在打开前会检查 EXTRA_OUTPUT 指向的文件，
-     * 空文件（0 字节）会被判定为无效输出目标，于是相机「看起来能拍、点确认却没结果」，
-     * 回传时给 RESULT_CANCELED。写入一个最小可解码的 JPEG 之后，
-     * 相机按正常流程覆盖写入，用户才拿得到照片。
+     * 为什么必须这样做：实测部分厂商相机（尤其国产 ROM 自带的）只接受相册
+     * content:// URI 作为 EXTRA_OUTPUT，喂它 FileProvider 路径会整轮失败并回取消，
+     * 用户看到的就是「相机没有返回照片」。
      *
-     * 若相机真的什么都没拍（用户取消），文件里就只剩这张 1×1 图；
-     * 由调用方按文件大小阈值排除，不会把占位图当成照片发出去。
+     * 返回 null 表示这台设备建不出来（例如没装相册/媒体库不可用），
+     * 调用方应退回使用缓存文件路径，保持旧行为而不是直接失败。
      */
-    private fun writePlaceholderJpeg(target: File) {
-        runCatching {
-            val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
-            FileOutputStream(target).use { stream ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+    private fun createCameraMediaEntry(): Uri? = runCatching {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "floatphone-${System.currentTimeMillis()}.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FloatPhone")
             }
-            bitmap.recycle()
         }
+        contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+    }.onFailure { error ->
+        recordWebConsoleMessage("camera media entry failed: ${error.message ?: error.javaClass.simpleName}")
+    }.getOrNull()
+
+    /** 拍照取消/失败时删掉相册里那条空记录，别在相册留垃圾。 */
+    private fun discardCameraMediaEntry(uri: Uri?) {
+        if (uri == null) return
+        runCatching { contentResolver.delete(uri, null, null) }
     }
 
-    /** 占位 JPEG 约 600 字节上下；小于该阈值说明相机没真正写图。 */
+    /**
+     * 把相机写入相册的照片复制进缓存文件，供网页按 FileProvider URI 读取。
+     *
+     * 相册条目会保留——那是用户自己拍的照片，删掉等于吞掉他的图；
+     * 而按 QQ/微信 的习惯，拍照发出去之后照片本来也应该留在相册里。
+     */
+    private fun copyMediaIntoCache(mediaUri: Uri, targetFile: File): Boolean = runCatching {
+        contentResolver.openInputStream(mediaUri)?.use { input ->
+            FileOutputStream(targetFile).use { output -> input.copyTo(output) }
+        } != null
+    }.getOrDefault(false)
+
+    /** 小于约 2KB 的文件基本不是一张真实照片（空文件或残缺写入），据此判定。 */
     private fun isMeaningfulPhoto(uri: Uri): Boolean {
         val size = runCatching {
             contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
@@ -320,46 +348,53 @@ class MainActivity : AppCompatActivity() {
      *   1. EXTRA_OUTPUT 指向的文件本身有内容 —— 正常路径；
      *   2. 回传 Intent 里的 "data" 缩略图 —— 相机不支持 EXTRA_OUTPUT 时的唯一产物。
      */
-    private fun ensureCapturedFileHasContent(uri: Uri, result: ActivityResult): Boolean {
-        val startSize = runCatching {
-            contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
+    private fun ensureCapturedFileHasContent(capture: PendingCapture, result: ActivityResult): Boolean {
+        val cacheSize = runCatching {
+            contentResolver.openFileDescriptor(capture.targetUri, "r")?.use { it.statSize } ?: 0L
         }.getOrDefault(0L)
+        val mediaSize = capture.mediaUri?.let { media ->
+            runCatching {
+                contentResolver.openFileDescriptor(media, "r")?.use { it.statSize } ?: 0L
+            }.getOrDefault(0L)
+        } ?: -1L
         recordWebConsoleMessage(
-            "camera result: code=${result.resultCode} size=$startSize hasData=${result.data != null}",
+            "camera result: code=${result.resultCode} cache=$cacheSize media=$mediaSize hasData=${result.data != null}",
         )
-        // ① 正常路径：EXTRA_OUTPUT 指定的文件里已经有真实照片。
-        //    注意不能用「> 0 字节」判断：目标文件里预置了 1×1 占位 JPEG（见 writePlaceholderJpeg），
-        //    只按非空判定会把占位图当成用户拍的照片发出去。这里用大小阈值区分。
-        if (isMeaningfulPhoto(uri)) return true
 
-        // ② 少数相机不给 EXTRA_OUTPUT 写盘，但会把图塞进回传 Intent 的 "data" 缩略图
+        // ① 相册条目里已有真实照片：复制进缓存，交给网页读取。
+        //    这是主路径——相机被要求写入相册时，产物只会落在相册里。
+        if (capture.mediaUri != null && mediaSize > 2048L) {
+            if (copyMediaIntoCache(capture.mediaUri, capture.targetFile)) return true
+        }
+
+        // ② 相册条目里没有时，个别设备仍会按 EXTRA_OUTPUT 直接写进缓存文件
+        if (isMeaningfulPhoto(capture.targetUri)) return true
+
+        // ③ 相机把图塞进回传 Intent 的 "data" 缩略图
         val thumbnail = runCatching {
             @Suppress("DEPRECATION")
             result.data?.extras?.get("data") as? Bitmap
         }.getOrNull()
         if (thumbnail != null) {
             val written = runCatching {
-                contentResolver.openOutputStream(uri)?.use { stream ->
+                FileOutputStream(capture.targetFile).use { stream ->
                     thumbnail.compress(Bitmap.CompressFormat.JPEG, 90, stream)
                 } != null
             }.getOrDefault(false)
             if (written) return true
         }
 
-        // ③ 还有一种情况：相机把照片写进了自己返回的 Uri（不是我们给的那个）。
-        //    这时把我们能读到的图复制进目标文件，避免整次拍照白费。
+        // ④ 相机把自己返回的 Uri 当作结果（既不是相册条目也不是缓存文件）
         val returnedUri = @Suppress("DEPRECATION") result.data?.data
-        if (returnedUri != null && returnedUri != uri) {
+        if (returnedUri != null && returnedUri != capture.targetUri && returnedUri != capture.mediaUri) {
             val copied = runCatching {
                 contentResolver.openInputStream(returnedUri)?.use { input ->
-                    contentResolver.openOutputStream(uri)?.use { output -> input.copyTo(output) }
+                    FileOutputStream(capture.targetFile).use { output -> input.copyTo(output) }
                 } != null
             }.getOrDefault(false)
             if (copied) return true
         }
 
-        // ④ 确实拿不到图：明确告诉用户，而不是静默吞掉
-        Toast.makeText(this@MainActivity, "相机没有返回照片，请重拍一次", Toast.LENGTH_SHORT).show()
         return false
     }
 
@@ -1379,36 +1414,37 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                     if (wantsCamera) {
                         val outputDir = File(cacheDir, "camera-capture").apply { mkdirs() }
                         val output = File.createTempFile("chat-photo-", ".jpg", outputDir)
-                        // 先写入一个最小合法 JPEG 占位。
-                        // 原因：部分厂商相机会校验 EXTRA_OUTPUT 指向的文件「是不是已有内容」，
-                        // 遇到 0 字节文件会当成无效目标而直接放弃，最后回给我们 RESULT_CANCELED
-                        // —— 用户看到的就是「相机没有返回照片」。有真实 JPEG 头之后它才肯照常写盘。
-                        writePlaceholderJpeg(output)
-                        val uri = FileProvider.getUriForFile(this@MainActivity, "${packageName}.camera", output)
-                        pendingCameraUri = uri
+                        // 交给网页读取的缓存文件。这里不预写占位图：产物是否为真由
+                        // isMeaningfulPhoto 的大小阈值判定，占位只会干扰判断。
+                        val cacheUri = FileProvider.getUriForFile(this@MainActivity, "${packageName}.camera", output)
+
+                        // 关键：不要只给缓存文件路径。不少厂商相机只肯往「相册条目」里写，
+                        // 给它 content://…camera/… 这类 FileProvider 路径会整轮失败并回取消。
+                        // 因此在支持的系统上，让相机直接写入 MediaStore 相册，取回后再复制进缓存。
+                        val mediaUri = createCameraMediaEntry()
+                        val writeTarget = mediaUri ?: cacheUri
+                        pendingCapture = PendingCapture(cacheUri, output, mediaUri)
+
                         val capture = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                            putExtra(MediaStore.EXTRA_OUTPUT, uri)
-                            // 相机要往这个 URI 写数据：读写权限都必须显式授予，
-                            // 缺写权限时相机同样会「静默失败后报取消」。
+                            putExtra(MediaStore.EXTRA_OUTPUT, writeTarget)
                             addFlags(
                                 Intent.FLAG_GRANT_READ_URI_PERMISSION or
                                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                             )
                         }
-                        // 设备上没有可用相机 App 时不要静默失败，退回通用选择器
                         val cameraApp = capture.resolveActivity(packageManager)
                         if (cameraApp != null) {
-                            // 逐个把能做拍照的 App 都授一次写权限（部分 ROM 会换用非默认相机）
                             runCatching {
                                 packageManager.queryIntentActivities(capture, 0).forEach { info ->
-                                    grantUriPermission(info.activityInfo.packageName, uri,
+                                    grantUriPermission(info.activityInfo.packageName, writeTarget,
                                         Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                                 }
                             }
                             fileChooserLauncher.launch(capture)
                             return@runCatching true
                         }
-                        pendingCameraUri = null
+                        discardCameraMediaEntry(mediaUri)
+                        pendingCapture = null
                     }
                     val intent = params.createIntent()
                     // createIntent() 一般已按 params.mode 带上 EXTRA_ALLOW_MULTIPLE；个别 WebView
