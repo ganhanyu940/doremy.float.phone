@@ -285,6 +285,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 往拍照目标文件写入一个 1×1 的合法 JPEG。
+     *
+     * 为什么需要：部分厂商相机在打开前会检查 EXTRA_OUTPUT 指向的文件，
+     * 空文件（0 字节）会被判定为无效输出目标，于是相机「看起来能拍、点确认却没结果」，
+     * 回传时给 RESULT_CANCELED。写入一个最小可解码的 JPEG 之后，
+     * 相机按正常流程覆盖写入，用户才拿得到照片。
+     *
+     * 若相机真的什么都没拍（用户取消），文件里就只剩这张 1×1 图；
+     * 由调用方按文件大小阈值排除，不会把占位图当成照片发出去。
+     */
+    private fun writePlaceholderJpeg(target: File) {
+        runCatching {
+            val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            FileOutputStream(target).use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+            }
+            bitmap.recycle()
+        }
+    }
+
+    /** 占位 JPEG 约 600 字节上下；小于该阈值说明相机没真正写图。 */
+    private fun isMeaningfulPhoto(uri: Uri): Boolean {
+        val size = runCatching {
+            contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
+        }.getOrDefault(0L)
+        return size > 2048L
+    }
+
+    /**
      * 保证拍照产物非空。返回 false 表示这次确实没拿到可用图片，调用方应回空。
      *
      * 两种兜底来源（按可靠性排序）：
@@ -292,11 +321,16 @@ class MainActivity : AppCompatActivity() {
      *   2. 回传 Intent 里的 "data" 缩略图 —— 相机不支持 EXTRA_OUTPUT 时的唯一产物。
      */
     private fun ensureCapturedFileHasContent(uri: Uri, result: ActivityResult): Boolean {
-        // ① 正常路径：EXTRA_OUTPUT 指定的文件里已经有内容
-        val target = runCatching {
+        val startSize = runCatching {
             contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
         }.getOrDefault(0L)
-        if (target > 0L) return true
+        recordWebConsoleMessage(
+            "camera result: code=${result.resultCode} size=$startSize hasData=${result.data != null}",
+        )
+        // ① 正常路径：EXTRA_OUTPUT 指定的文件里已经有真实照片。
+        //    注意不能用「> 0 字节」判断：目标文件里预置了 1×1 占位 JPEG（见 writePlaceholderJpeg），
+        //    只按非空判定会把占位图当成用户拍的照片发出去。这里用大小阈值区分。
+        if (isMeaningfulPhoto(uri)) return true
 
         // ② 少数相机不给 EXTRA_OUTPUT 写盘，但会把图塞进回传 Intent 的 "data" 缩略图
         val thumbnail = runCatching {
@@ -1329,27 +1363,48 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                 filePathCallback = callback
                 pendingCameraUri = null
                 return runCatching {
-                    // 只要图片、且不是多选：网页里这种 input 只有「拍照」按钮（带 capture）。
-                    // 「照片墙」选图走 MODE_OPEN_MULTIPLE，不会被这里截走。
+                    // 只认「网页明确要求拍照」这一种情况：isCaptureEnabled 是 WebView
+                    // 根据 input 上的 capture 属性给出的信号。
+                    //
+                    // 曾经为了兼容「某些 ROM 上 isCaptureEnabled 恒为 false」而放宽成
+                    // 「单选 + 纯图片即拍照」，结果把换头像、选单张封面这些**本该打开相册**
+                    // 的场景一起劫持成了相机 —— 这是明确的回归，不能再这么判断。
+                    // 宁可回到「拍照按钮可能打开相册」的旧行为，也不能破坏选图。
                     val imageOnly = params.acceptTypes.isNotEmpty() && params.acceptTypes.all { type ->
                         type.equals("image/*", ignoreCase = true) || type.startsWith("image/", ignoreCase = true)
                     }
-                    val singlePick = params.mode != WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
-                    // isCaptureEnabled 在部分 ROM/WebView 上恒为 false，只认它会导致
-                    // 「点拍照却打开相册」。因此判定放宽为「单选 + 纯图片」即当拍照处理；
-                    // 选图场景（照片墙 / 多选）走 MODE_OPEN_MULTIPLE，不受影响。
-                    val wantsCamera = imageOnly && singlePick
+                    // 换头像、选封面这类 input 也没有多选标志，但它们要的是相册。
+                    // 只有 WebView 明确回传 isCaptureEnabled（对应 input 的 capture 属性）时才开相机。
+                    val wantsCamera = params.isCaptureEnabled && imageOnly
                     if (wantsCamera) {
                         val outputDir = File(cacheDir, "camera-capture").apply { mkdirs() }
                         val output = File.createTempFile("chat-photo-", ".jpg", outputDir)
+                        // 先写入一个最小合法 JPEG 占位。
+                        // 原因：部分厂商相机会校验 EXTRA_OUTPUT 指向的文件「是不是已有内容」，
+                        // 遇到 0 字节文件会当成无效目标而直接放弃，最后回给我们 RESULT_CANCELED
+                        // —— 用户看到的就是「相机没有返回照片」。有真实 JPEG 头之后它才肯照常写盘。
+                        writePlaceholderJpeg(output)
                         val uri = FileProvider.getUriForFile(this@MainActivity, "${packageName}.camera", output)
                         pendingCameraUri = uri
                         val capture = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
                             putExtra(MediaStore.EXTRA_OUTPUT, uri)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                            // 相机要往这个 URI 写数据：读写权限都必须显式授予，
+                            // 缺写权限时相机同样会「静默失败后报取消」。
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                            )
                         }
                         // 设备上没有可用相机 App 时不要静默失败，退回通用选择器
-                        if (capture.resolveActivity(packageManager) != null) {
+                        val cameraApp = capture.resolveActivity(packageManager)
+                        if (cameraApp != null) {
+                            // 逐个把能做拍照的 App 都授一次写权限（部分 ROM 会换用非默认相机）
+                            runCatching {
+                                packageManager.queryIntentActivities(capture, 0).forEach { info ->
+                                    grantUriPermission(info.activityInfo.packageName, uri,
+                                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                                }
+                            }
                             fileChooserLauncher.launch(capture)
                             return@runCatching true
                         }
