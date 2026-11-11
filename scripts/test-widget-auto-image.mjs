@@ -16,7 +16,7 @@ function loadTs(relativePath, filename) {
   return moduleBox.exports;
 }
 
-const { autoPlaceImage, templateUsesImagePlaceholder, WIDGET_IMAGE_CLASS } =
+const { autoPlaceImage, templateUsesImagePlaceholder, describeCoverPlacement, WIDGET_IMAGE_CLASS } =
   loadTs("../lib/widget/auto-image.ts", "auto-image.cjs");
 
 // ── 占位符检测 ──
@@ -32,14 +32,20 @@ assert.equal(autoPlaceImage(plain, "off"), plain);
 // ── 空模板不炸 ──
 assert.equal(autoPlaceImage("", "background"), "");
 
-// ── 背景模式：插进 .card，补 position:relative，原内容一字不少 ──
+// ── 背景模式：设成容器 background-image，而不是插会被遮住的 img ──
 const bg = autoPlaceImage(plain, "background");
-assert.ok(bg.includes(WIDGET_IMAGE_CLASS), "背景模式应插入配图 img");
-assert.ok(bg.includes("position:relative"), "容器应补 position:relative");
+assert.ok(bg.includes("background-image:url({{image}})"), "背景模式应设容器背景图");
+assert.ok(!bg.includes(WIDGET_IMAGE_CLASS), "不应插入独立 img（会被卡片背景盖住）");
 assert.ok(bg.includes('<div class="text">{{text}}</div>'), "原有子结构必须原样保留");
-assert.ok(bg.indexOf(WIDGET_IMAGE_CLASS) < bg.indexOf("class=\"text\""), "背景层应在内容之前");
-// 只插一个 img
-assert.equal(bg.split(WIDGET_IMAGE_CLASS).length - 1, 1);
+// 只设一次背景
+assert.equal(bg.split("background-image:url({{image}})").length - 1, 1);
+
+// 已有 background-image 时要替换而不是叠加
+const withBgImage = '<div class="card" style="background-image:url(old.png);background-color:#fff"><p>x</p></div>';
+const replaced = autoPlaceImage(withBgImage, "background");
+assert.ok(!replaced.includes("old.png"), "原背景图应被替换");
+assert.ok(replaced.includes("background-color:#fff"), "background-color 保留作兜底");
+assert.equal(replaced.split("background-image").length - 1, 1, "不应出现两个 background-image");
 
 // ── 条带模式：补 flex 与方向，且不覆盖已有 display ──
 const existingFlex = '<div class="card" style="display:flex;gap:8px"><span>x</span></div>';
@@ -96,9 +102,24 @@ const inlineOut = autoPlaceImage(inlineCover, "cover");
 assert.ok(inlineOut.includes("url({{image}})"), "无规则时应补到元素 style");
 assert.ok(/class="cover" style="[^"]*url/.test(inlineOut));
 
-// ── 封面模式：什么封面都找不到时退回背景，不能丢图 ──
+// ── 封面模式：内嵌 <img> 时优先换 src（最容易被 background 方案漏掉的情况） ──
+const imgCover = '<div class="card"><div class="cover"><img src="old.png" style="width:100%"></div></div>';
+const imgOut = autoPlaceImage(imgCover, "cover");
+assert.ok(imgOut.includes('src="{{image}}"'), "应替换内嵌图片的 src");
+assert.ok(!imgOut.includes("old.png"), "原图片地址应被换掉");
+assert.ok(imgOut.includes("object-fit:cover"), "图片应填满方块");
+assert.ok(imgOut.includes('style="width:100%;object-fit:cover'), "原有 style 必须保留");
+
+// ── 封面模式：命中与否要能告诉调用方 ──
+const coverFound = describeCoverPlacement(imgCover);
+assert.equal(coverFound.placed, true);
+assert.ok(coverFound.target.includes("cover"));
+const coverMiss = describeCoverPlacement('<div class="card"><p>只有文字</p></div>');
+assert.equal(coverMiss.placed, false, "找不到封面位时应报告未命中");
+assert.equal(coverMiss.target, "");
+
+// ── 封面模式：找不到封面位时原样返回，不静默改成背景 ──
 const noCover = '<div class="card"><p>只有文字</p></div>';
-const fallback = autoPlaceImage(noCover, "cover");
-assert.ok(fallback.includes(WIDGET_IMAGE_CLASS), "找不到封面应退回背景模式");
+assert.equal(autoPlaceImage(noCover, "cover"), noCover, "未命中时不应擅自改成背景模式");
 
 console.log("Widget auto-image placement tests passed.");

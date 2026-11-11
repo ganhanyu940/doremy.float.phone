@@ -288,7 +288,9 @@ export function renderWidgetHtml(
   const imageDataUrl = (options.imageDataUrl || "").trim();
   const hasImage = Boolean(imageDataUrl);
   const imageInner = hasImage ? `<img src="${esc(imageDataUrl)}" alt="">` : "";
-  const imageCss = hasImage ? `--image: url("${esc(imageDataUrl)}")` : "";
+  // 不加引号：data URL 本身没有空格，套上引号再嵌进 url() 时
+  // 部分 WebView 会判定为非法值整条丢弃，表现为「配图不显示」。
+  const imageCss = hasImage ? `--image: url(${imageDataUrl})` : "";
   const imageSrc = hasImage ? imageDataUrl : "";
 
   const lifeState = loadVirtualLifeState();

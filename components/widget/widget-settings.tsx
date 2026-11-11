@@ -33,6 +33,7 @@ import {
   type WidgetProfile,
   type WidgetImageMode,
   WIDGET_IMAGE_MODES,
+  describeCoverPlacement,
   describeImageSize,
   pickWidgetImage,
   renderWidgetHtmlWithImage,
@@ -309,9 +310,19 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
       setProfileDraft(next);
       const ok = saveAndPushProfile(next);
 
+      // 封面模式要明确告诉用户命中在哪：命中不了就没效果，
+      // 沉默会让人以为功能坏了
+      const cover = mode === "cover" ? describeCoverPlacement(next.template || DEFAULT_WIDGET_TEMPLATE) : null;
+      const coverHint = cover
+        ? (cover.placed
+          ? "，已放进 " + cover.target + "。"
+          : "。这张模板里没找到封面位（.cover/.avatar 之类），图和文字都不会变——请在模板里给要放图的位置加 class=\"cover\"。")
+        : "";
+
       onNotice?.(
         "配图已加入（" + describeImageSize(result.bytes) + "）"
-        + (ok ? "，并已推送到桌面。" : "。当前 App 版本无法直接推到桌面，点「推送到桌面」再试一次。"),
+        + coverHint
+        + (coverHint ? "" : (ok ? "，并已推送到桌面。" : "。当前 App 版本无法直接推到桌面，点「推送到桌面」再试一次。")),
       );
     } finally {
       setImageBusy(false);
