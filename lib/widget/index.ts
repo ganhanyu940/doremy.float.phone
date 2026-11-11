@@ -9,3 +9,4 @@ export * from "./bridge";
 export * from "./engine";
 export * from "./avatar";
 export * from "./image-picker";
+export * from "./auto-image";

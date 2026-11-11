@@ -8,7 +8,7 @@
  */
 
 import { kvGet, kvSet, registerKvMigration } from "../kv-db";
-import { WIDGET_DEFAULTS, WIDGET_LIMITS, WIDGET_UPDATED_EVENT, type WidgetConfig, type WidgetData, type WidgetProfile } from "./types";
+import { WIDGET_DEFAULTS, WIDGET_LIMITS, WIDGET_UPDATED_EVENT, isWidgetImageMode, type WidgetConfig, type WidgetData, type WidgetProfile } from "./types";
 
 const CONFIG_KEY = "ai_phone_widget_config_v1";
 const DATA_KEY = "ai_phone_widget_data_v1";
@@ -145,6 +145,7 @@ export function loadWidgetProfiles(): WidgetProfile[] {
         heightDp: clamp(item.heightDp, WIDGET_LIMITS.heightDp.min, WIDGET_LIMITS.heightDp.max, WIDGET_DEFAULTS.heightDp),
         scale: clamp(item.scale, WIDGET_LIMITS.scale.min, WIDGET_LIMITS.scale.max, WIDGET_DEFAULTS.scale),
         imageDataUrl: typeof item.imageDataUrl === "string" ? item.imageDataUrl.slice(0, MAX_PROFILE_IMAGE_CHARS) : "",
+        imageMode: isWidgetImageMode(item.imageMode) ? item.imageMode : "background",
         createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
         updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
       }));
@@ -162,6 +163,7 @@ export function saveWidgetProfiles(profiles: WidgetProfile[]): void {
     template: profile.template.slice(0, 30000),
     customCss: profile.customCss.slice(0, 20000),
     imageDataUrl: typeof profile.imageDataUrl === "string" ? profile.imageDataUrl.slice(0, MAX_PROFILE_IMAGE_CHARS) : "",
+    imageMode: isWidgetImageMode(profile.imageMode) ? profile.imageMode : "background",
     updatedAt: now,
   }));
   kvSet(PROFILES_KEY, JSON.stringify(safe));

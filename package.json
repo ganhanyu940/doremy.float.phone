@@ -9,7 +9,7 @@
     "start": "node scripts/local-next-server.mjs --prod",
     "lint": "node scripts/run-eslint.mjs",
     "test:character-id": "node scripts/test-character-id-integration.mjs",
-    "test:widget-output": "node scripts/test-phone-widget-output.mjs",
+    "test:widget-output": "node scripts/test-phone-widget-output.mjs && node scripts/test-widget-auto-image.mjs",
     "test:life": "node scripts/test-character-id-integration.mjs && node scripts/test-life-runtime.mjs && node scripts/test-life-autonomy.mjs && node scripts/test-life-scene-responders.mjs && node scripts/test-life-output-parser.mjs && node scripts/test-life-guided-schedule.mjs && node scripts/test-life-wiring.mjs && node scripts/test-life-notification-queue.mjs && node scripts/test-life-notification-bridge.mjs && node scripts/test-life-scheduler-coordinator.mjs && node scripts/test-turn-coordinator.mjs && node scripts/test-life-cloud-scheduler.mjs",
     "test:photo-wall": "node scripts/test-photo-wall-sticker-sizing.mjs && node scripts/test-photo-wall-record-layers.mjs",
     "check:sdk": "node scripts/check-custom-app-sdk-consistency.mjs",

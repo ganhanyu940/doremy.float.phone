@@ -31,8 +31,12 @@ import {
   saveWidgetProfile,
   syncWidgetProfilesToNative,
   type WidgetProfile,
+  type WidgetImageMode,
+  WIDGET_IMAGE_MODES,
   describeImageSize,
   pickWidgetImage,
+  renderWidgetHtmlWithImage,
+  templateUsesImagePlaceholder,
   hasWidgetBridge,
   isWidgetPlaced,
   loadWidgetConfig,
@@ -199,6 +203,7 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
       widthDp: config.widthDp,
       heightDp: config.heightDp,
       scale: config.scale,
+      imageMode: "background",
       createdAt: now,
       updatedAt: now,
     };
@@ -219,12 +224,12 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
       source: "manual" as const,
     };
     return injectWidgetCss(
-      renderWidgetHtml(
+      renderWidgetHtmlWithImage(
         profileDraft.template || DEFAULT_WIDGET_TEMPLATE,
         data,
         character?.name ?? "角色",
         "你",
-        { imageDataUrl: profileDraft.imageDataUrl },
+        { imageDataUrl: profileDraft.imageDataUrl, imageMode: profileDraft.imageMode },
       ),
       profileDraft.customCss,
     );
@@ -234,15 +239,80 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
     setProfileDraft(current => current ? { ...current, ...patch } : current);
   };
 
-  /** 从图库挑一张图作为这个款式的配图。压到 720px / JPEG 再存 data URL。 */
+  /**
+   * 保存这份款式并立刻推给原生重画。
+   * 配图相关的操作（选图/换位置/移除）都走这条，用户不用再点「保存」再点「推送」。
+   */
+  const saveAndPushProfile = (profile: WidgetProfile): boolean => {
+    saveWidgetProfile(profile);
+    setProfiles(loadWidgetProfiles());
+    if (!hasWidgetBridge()) return false;
+    const character = characters.find(c => c.id === profile.characterId);
+    const data = loadWidgetData(profile.characterId) ?? {
+      characterId: profile.characterId,
+      text: SAMPLE_TEXT,
+      status: SAMPLE_STATUS,
+      avatar: character?.avatar ?? "",
+      updatedAt: new Date().toISOString(),
+      source: "manual" as const,
+    };
+    return pushWidgetProfileHtml(
+      profile.id,
+      injectWidgetCss(
+        renderWidgetHtmlWithImage(
+          profile.template || DEFAULT_WIDGET_TEMPLATE,
+          data,
+          character?.name ?? "角色",
+          "你",
+          { imageDataUrl: profile.imageDataUrl, imageMode: profile.imageMode },
+        ),
+        profile.customCss,
+      ),
+      { widthDp: profile.widthDp, heightDp: profile.heightDp, scale: profile.scale },
+    );
+  };
+
+  /** 切换配图位置：存下来并重画，桌面上立刻跟着变。 */
+  const changeImageMode = (mode: WidgetImageMode) => {
+    if (!profileDraft) return;
+    const next: WidgetProfile = { ...profileDraft, imageMode: mode };
+    setProfileDraft(next);
+    const ok = saveAndPushProfile(next);
+    if (profileDraft.imageDataUrl) {
+      onNotice?.(ok ? "位置已更新，桌面已重画。" : "位置已保存；当前 App 版本推不到桌面，点「推送到桌面」再试。");
+    }
+  };
+
+  /** 去掉配图：清空图片、存下来并重画（桌面上那块图随之消失）。 */
+  const removeProfileImage = () => {
+    if (!profileDraft) return;
+    const next: WidgetProfile = { ...profileDraft, imageDataUrl: "" };
+    setProfileDraft(next);
+    const ok = saveAndPushProfile(next);
+    onNotice?.(ok ? "配图已移除，桌面已重画。" : "配图已移除；当前 App 版本推不到桌面，点「推送到桌面」再试。");
+  };
+
+  /** 从图库挑一张图作为这个款式的配图，选完立刻保存并推给原生，不用再点别的按钮。 */
   const pickProfileImage = async (file: File | null | undefined) => {
-    if (!file) return;
+    if (!file || !profileDraft) return;
     setImageBusy(true);
     try {
       const result = await pickWidgetImage(file);
       if (!result.ok) { onNotice?.(result.reason); return; }
-      patchProfileDraft({ imageDataUrl: result.dataUrl });
-      onNotice?.("配图已载入（压到 " + describeImageSize(result.bytes) + "），保存配置后生效。");
+
+      // 用户若已在模板里手写了占位符，说明自己安排了位置，就别自动插了
+      const mode: WidgetImageMode = templateUsesImagePlaceholder(profileDraft.template)
+        ? "off"
+        : (profileDraft.imageMode && profileDraft.imageMode !== "off" ? profileDraft.imageMode : "background");
+
+      const next: WidgetProfile = { ...profileDraft, imageDataUrl: result.dataUrl, imageMode: mode };
+      setProfileDraft(next);
+      const ok = saveAndPushProfile(next);
+
+      onNotice?.(
+        "配图已加入（" + describeImageSize(result.bytes) + "）"
+        + (ok ? "，并已推送到桌面。" : "。当前 App 版本无法直接推到桌面，点「推送到桌面」再试一次。"),
+      );
     } finally {
       setImageBusy(false);
       // 清空 input，同一个文件再选一次也能触发 change
@@ -537,17 +607,32 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
             />
           </div>
 
-          {/* 配图：从相册选一张，压成 data URL 后进模板的 {{imageInner}} 或 {{imageCss}} */}
+          {/* 配图：选完自动摆进模板，用户不用写任何代码 */}
           <div className="ws-row">
             <div className="ws-row-text">
               <b>配图</b>
               <p>
-                模板里用 <code>{"{{imageInner}}"}</code> 直接放图，
-                或用 <code>{"{{imageCss}}"}</code> 当背景。
-                图片会压到 720px 存本地，不上云。
+                选一张图就会自动摆进卡片，不用改模板。
+                图片压到 720px 存本地，不上云。
               </p>
             </div>
           </div>
+          <label className="ws-field">
+            图片摆在哪儿
+            <select
+              value={profileDraft.imageMode ?? "background"}
+              onChange={e => changeImageMode(e.target.value as WidgetImageMode)}
+            >
+              {WIDGET_IMAGE_MODES.map(mode => (
+                <option key={mode.value} value={mode.value}>{mode.label}</option>
+              ))}
+            </select>
+          </label>
+          {templateUsesImagePlaceholder(profileDraft.template) ? (
+            <p className="ws-hint">
+              你的模板里已经写了配图占位符，位置以模板为准——这里选「不自动摆」就不会重复插一张。
+            </p>
+          ) : null}
           <input
             ref={imageInputRef}
             type="file"
@@ -568,7 +653,7 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
               <button
                 type="button"
                 className="ws-btn ghost"
-                onClick={() => patchProfileDraft({ imageDataUrl: "" })}
+                onClick={removeProfileImage}
               >
                 移除配图
               </button>

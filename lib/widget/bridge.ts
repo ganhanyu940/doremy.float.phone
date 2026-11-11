@@ -18,7 +18,7 @@ import { isCompatibilityFeatureEnabled } from "../device-compatibility";
  */
 
 import { loadWidgetConfig, loadWidgetData, loadWidgetProfileData, loadWidgetProfiles } from "./storage";
-import { injectWidgetCss, renderWidgetHtml } from "./template";
+import { injectWidgetCss, renderWidgetHtml, renderWidgetHtmlWithImage } from "./template";
 import { loadCharacters } from "../character-storage";
 
 type PhoneWidgetBridge = {
@@ -192,7 +192,10 @@ export function syncWidgetProfilesToNative(): void {
       updatedAt: new Date().toISOString(), source: "manual" as const,
     };
     const html = injectWidgetCss(
-      renderWidgetHtml(profile.template, data, character?.name ?? "角色", "你", { imageDataUrl: profile.imageDataUrl }),
+      renderWidgetHtmlWithImage(profile.template, data, character?.name ?? "角色", "你", {
+        imageDataUrl: profile.imageDataUrl,
+        imageMode: profile.imageMode,
+      }),
       profile.customCss,
     );
     pushWidgetProfileHtml(profile.id, html, { widthDp: profile.widthDp, heightDp: profile.heightDp, scale: profile.scale });

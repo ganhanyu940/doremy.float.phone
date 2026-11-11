@@ -29,9 +29,37 @@ export type WidgetProfile = {
    * 所以配图必须自带数据，和头像同一个道理。
    */
   imageDataUrl?: string;
+  /**
+   * 配图自动摆放的位置。选了图之后渲染时会自动把图放进模板，
+   * 用户不需要自己写占位符；写了自己占位符的仍可用 "off" 关掉自动摆放。
+   */
+  imageMode?: WidgetImageMode;
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * 配图位置：
+ *   off        = 不自动摆（模板里自己写了 {{image}} / {{imageInner}} 时用这个）
+ *   background = 铺满整张卡片当背景，文字压在上面
+ *   top/bottom = 上方/下方一条图片带
+ *   left/right = 左侧/右侧一列竖图
+ */
+export type WidgetImageMode = "off" | "background" | "top" | "bottom" | "left" | "right";
+
+export const WIDGET_IMAGE_MODES: { value: WidgetImageMode; label: string }[] = [
+  { value: "background", label: "铺满整张卡（背景）" },
+  { value: "top", label: "上方一条" },
+  { value: "bottom", label: "下方一条" },
+  { value: "left", label: "左侧一列" },
+  { value: "right", label: "右侧一列" },
+  { value: "off", label: "不自动摆（我在模板里自己写了）" },
+];
+
+export function isWidgetImageMode(value: unknown): value is WidgetImageMode {
+  return typeof value === "string"
+    && WIDGET_IMAGE_MODES.some(mode => mode.value === value);
+}
 
 /** 小组件当前显示的内容。 */
 export type WidgetData = {

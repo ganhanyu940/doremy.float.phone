@@ -12,7 +12,8 @@
  * 不联网、不执行脚本（javaScriptEnabled=false）。模板里的 <script> 不会运行。
  */
 
-import type { WidgetData } from "./types";
+import type { WidgetData, WidgetImageMode } from "./types";
+import { autoPlaceImage } from "./auto-image";
 import { loadVirtualLifeState } from "../life/life-storage";
 import { getActorClock, getCurrentActorSchedule, resolveActorLifeNow } from "../life/life-runtime";
 
@@ -218,6 +219,27 @@ export function injectWidgetCss(html: string, css: string): string {
   const headEnd = html.toLowerCase().indexOf("</head>");
   if (headEnd >= 0) return html.slice(0, headEnd) + style + html.slice(headEnd);
   return style + html;
+}
+
+/**
+ * 带自动配图摆放的完整渲染：给调用方一个「什么都不用管」的入口。
+ *
+ * 顺序很重要——先按 imageMode 把图插进模板，再交给 renderWidgetHtml 填占位符，
+ * 这样「用户手写的 {{image}}」和「自动插进去的 {{image}}」走的是同一条路径，
+ * 不会出现两套逻辑各有各的坑。
+ */
+export function renderWidgetHtmlWithImage(
+  template: string,
+  data: WidgetData,
+  charName: string,
+  userName: string,
+  options: { imageDataUrl?: string; imageMode?: WidgetImageMode } = {},
+): string {
+  const mode = options.imageMode ?? "background";
+  const base = template.trim() || DEFAULT_WIDGET_TEMPLATE;
+  // 没图时不插空 <img>，否则桌面上会留一块破图占位
+  const withImage = options.imageDataUrl ? autoPlaceImage(base, mode) : base;
+  return renderWidgetHtml(withImage, data, charName, userName, { imageDataUrl: options.imageDataUrl });
 }
 
 export function renderWidgetHtml(
