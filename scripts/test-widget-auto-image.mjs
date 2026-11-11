@@ -75,4 +75,30 @@ assert.ok(!posOut.includes("position:relative"), "不应再追加 position:relat
 // ── 占位符原样保留，等 renderWidgetHtml 去填 ──
 assert.ok(bg.includes("{{image}}"), "自动插入的 img 应输出 {{image}} 占位符");
 
+// ── 封面模式：改已有 .cover 规则的背景，不插新元素 ──
+const music = `<html><head><style>
+  .cover { width: 20%; aspect-ratio: 1; flex: none; background: linear-gradient(140deg, #eeeeee, #c5c5c5); display: grid; place-items: center; color: #777; }
+</style></head><body><div class="card"><div class="cover">♪</div><p>{{text}}</p></div></body></html>`;
+const cover = autoPlaceImage(music, "cover");
+assert.ok(cover.includes("url({{image}})"), "封面规则里应填入配图");
+assert.ok(!cover.includes("linear-gradient(140deg"), "原占位渐变应被图片顶掉");
+assert.ok(cover.includes("aspect-ratio: 1"), "封面尺寸必须保留");
+assert.ok(cover.includes("width: 20%"), "封面宽度必须保留");
+assert.ok(cover.includes("place-items: center"), "封面布局必须保留");
+assert.ok(!cover.includes(WIDGET_IMAGE_CLASS), "封面模式不应插入独立 img");
+assert.ok(cover.includes("{{text}}"), "其余占位符不受影响");
+// 只改一处规则
+assert.equal(cover.split("url({{image}})").length - 1, 1);
+
+// ── 封面模式：没有内联规则时给元素补 style ──
+const inlineCover = '<div class="card"><div class="cover"></div></div>';
+const inlineOut = autoPlaceImage(inlineCover, "cover");
+assert.ok(inlineOut.includes("url({{image}})"), "无规则时应补到元素 style");
+assert.ok(/class="cover" style="[^"]*url/.test(inlineOut));
+
+// ── 封面模式：什么封面都找不到时退回背景，不能丢图 ──
+const noCover = '<div class="card"><p>只有文字</p></div>';
+const fallback = autoPlaceImage(noCover, "cover");
+assert.ok(fallback.includes(WIDGET_IMAGE_CLASS), "找不到封面应退回背景模式");
+
 console.log("Widget auto-image placement tests passed.");

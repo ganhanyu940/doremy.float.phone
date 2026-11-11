@@ -56,6 +56,84 @@ export function buildImageTag(mode: WidgetImageMode): string {
   return `<img class="${WIDGET_IMAGE_CLASS}" data-image-mode="${mode}" src="{{image}}" style="${bandStyle(mode)}" alt="">`;
 }
 
+/**
+ * 封面类元素的选择器关键词。
+ * 音乐播放器叫 cover/album/art，头像位叫 avatar，缩略图叫 thumb——
+ * 用户模板里基本都是这几个词，按顺序试，先命中先用。
+ */
+const COVER_SELECTORS = [
+  "cover", "album", "artwork", "avatar", "thumb", "photo", "pic",
+];
+
+/**
+ * 把配图填进模板里已有的「封面方块」。
+ *
+ * 思路和别的模式不同：不插新元素，而是找到那个本来显示占位图/色块的
+ * 元素，把它的 background 换成这张图。这样音乐播放器的封面位、
+ * 头像位都能直接被自己的图顶掉，而版式一点不动。
+ *
+ * 找法（两层）：
+ *   ① 模板 <style> 里有 `.cover { background: ... }` 这类规则 → 直接改规则；
+ *   ② 没有内联规则 → 找 class 命中的元素，给它补一个 style 背景。
+ * 都没命中就退化成背景模式（用户至少能看到图）。
+ */
+function placeAsCover(html: string): string {
+  const imageValue = "url({{image}}) center/cover no-repeat";
+
+  // ① 改 <style> 里的规则：只改命中的第一条，避免把所有同名规则全铺上图
+  for (const key of COVER_SELECTORS) {
+    const ruleRe = new RegExp(
+      `(\\.${key}[\\w-]*)\\s*\\{([^}]*)\\}`,
+      "i",
+    );
+    const ruleMatch = ruleRe.exec(html);
+    if (!ruleMatch) continue;
+    const [whole, selector, body] = ruleMatch;
+
+    // 已经有了 background-image 就替换掉，没有就追加
+    let nextBody: string;
+    if (/\bbackground(-image)?\s*:/i.test(body)) {
+      nextBody = body.replace(
+        /\bbackground(-image)?\s*:[^;]*;?/i,
+        `background: ${imageValue};`,
+      );
+    } else {
+      nextBody = `${body.trim().replace(/;*$/, "")};background: ${imageValue};`;
+    }
+    // 背景图要能裁切进方块，圆角才不会是直角的图
+    if (!/background-size\s*:/i.test(nextBody)) nextBody += ";background-size:cover;background-position:center";
+    if (!/overflow\s*:/i.test(nextBody)) nextBody += ";overflow:hidden";
+
+    return html.slice(0, ruleMatch.index) + `${selector}{${nextBody}}` + html.slice(ruleMatch.index + whole.length);
+  }
+
+  // ② 没有内联规则：给命中的元素补 style
+  for (const key of COVER_SELECTORS) {
+    const elRe = new RegExp(
+      `<([a-zA-Z][\\w-]*)\\b([^>]*\\bclass\\s*=\\s*["'][^"']*\\b${key}[^"']*["'][^>]*)>`,
+      "i",
+    );
+    const elMatch = elRe.exec(html);
+    if (!elMatch) continue;
+    const openTag = elMatch[0];
+    if (/\bstyle\s*=\s*["']/i.test(openTag)) {
+      const patched = openTag.replace(
+        /(\bstyle\s*=\s*["'])([^"']*)(["'])/i,
+        (_m, open: string, css: string, close: string) => {
+          const trimmed = css.trim().replace(/;+$/, "");
+          return `${open}${trimmed ? trimmed + ";" : ""}background:${imageValue};background-size:cover;background-position:center;${close}`;
+        },
+      );
+      return html.slice(0, elMatch.index) + patched + html.slice(elMatch.index + openTag.length);
+    }
+    const patched = openTag.replace(/>$/, ` style="background:${imageValue};background-size:cover;background-position:center;">`);
+    return html.slice(0, elMatch.index) + patched + html.slice(elMatch.index + openTag.length);
+  }
+
+  // ③ 都没命中：退回背景模式，至少能看到图
+  return autoPlaceImage(html, "background");
+}
+
 /** 找到模板里最外层的一个「内容容器」开标签，返回插入点（标签结束处）。 */
 function findContainerInsertPoint(html: string): number {
   // 优先看这几个常见的容器 class（用户模板和内置模板都用得到）
@@ -128,6 +206,9 @@ function ensureContainerLayout(html: string, insertAt: number, mode: WidgetImage
  */
 export function autoPlaceImage(html: string, mode: WidgetImageMode): string {
   if (mode === "off" || !html.trim()) return html;
+
+  // 封面模式分两条完全不同的路：改已有元素的背景，而不是插新元素
+  if (mode === "cover") return placeAsCover(html);
 
   const tag = mode === "background"
     ? `<img class="${WIDGET_IMAGE_CLASS}" data-image-mode="background" src="{{image}}" style="${BACKGROUND_LAYER_CSS}" alt="">`

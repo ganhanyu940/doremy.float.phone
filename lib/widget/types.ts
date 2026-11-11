@@ -45,9 +45,10 @@ export type WidgetProfile = {
  *   top/bottom = 上方/下方一条图片带
  *   left/right = 左侧/右侧一列竖图
  */
-export type WidgetImageMode = "off" | "background" | "top" | "bottom" | "left" | "right";
+export type WidgetImageMode = "off" | "background" | "top" | "bottom" | "left" | "right" | "cover";
 
 export const WIDGET_IMAGE_MODES: { value: WidgetImageMode; label: string }[] = [
+  { value: "cover", label: "替换封面方块（专辑图/头像位）" },
   { value: "background", label: "铺满整张卡（背景）" },
   { value: "top", label: "上方一条" },
   { value: "bottom", label: "下方一条" },
