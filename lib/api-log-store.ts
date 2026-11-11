@@ -19,6 +19,16 @@ export type DebugInfo = {
     source?: "chat" | "background" | "qa";
     /** 归属通道：qa 进工坊专用环，其余进底层调用日志环。分流只认这个显式字段，不看角色名 */
     channel?: "chat" | "qa";
+    /**
+     * 发起这次调用的功能标识（如 "记忆总结"、"朋友圈"、"桌面小组件"）。
+     *
+     * 为什么要单独一个字段：原来只能靠 characterName 猜是哪个功能——
+     * 那里有时塞角色名、有时塞功能名，两者混在一起就没法按功能统计用量。
+     * 新调用点都该填它；老记录没有这个字段，展示层按旧规则兜底。
+     */
+    feature?: string;
+    /** 真实计时：这次请求从发出到返回用了多久（毫秒），看后台偷跑时很有用 */
+    durationMs?: number;
 };
 
 // 底层调用日志环容量。原为 50：聊天请求与 18 处 simpleLLMCall 后台调用（记忆总结、
@@ -102,6 +112,7 @@ function truncateEntryForLog(entry: Omit<DebugInfo, "id" | "timestamp">): Omit<D
             ? truncateForLog(entry.characterName, MAX_LOG_METADATA_CHARS)
             : undefined,
         model: entry.model !== undefined ? truncateForLog(entry.model, MAX_LOG_METADATA_CHARS) : undefined,
+        feature: entry.feature !== undefined ? truncateForLog(entry.feature, MAX_LOG_METADATA_CHARS) : undefined,
         messages: truncateMessagesForLog(entry.messages),
         rawResponse: truncateForLog(entry.rawResponse, MAX_LOG_RESPONSE_CHARS),
         reasoning: entry.reasoning !== undefined ? truncateForLog(entry.reasoning, MAX_LOG_RESPONSE_CHARS) : undefined,

@@ -98,7 +98,18 @@ export function isNativeGoogleApi(config: ApiConfig): boolean {
 export async function simpleLLMCall(
     config: ApiConfig,
     messages: { role: string; content: string }[],
-    options?: { temperature?: number; max_tokens?: number; signal?: AbortSignal; label?: string },
+    options?: {
+        temperature?: number;
+        max_tokens?: number;
+        signal?: AbortSignal;
+        /** characterName 字段里要显示的标签（兼容老用法：有时是角色名，有时是功能名） */
+        label?: string;
+        /**
+         * 功能标识，用于调用记录里按功能统计 token。
+         * 新调用点都该填（如 "记忆总结"、"朋友圈"）；不填时归到「后台功能（未标注）」。
+         */
+        feature?: string;
+    },
 ): Promise<{ content: string | null; error?: string; finishReason?: string; wasTruncated?: boolean }> {
     const baseUrl = determineBaseUrl(config);
     if (!baseUrl || !config.apiKey) {
@@ -108,6 +119,8 @@ export async function simpleLLMCall(
     const headers = buildRequestHeaders(config, baseUrl);
     const temperature = options?.temperature ?? 0.7;
     const max_tokens = options?.max_tokens;
+    // 放在 try 外面：catch 块里也要记耗时，否则请求一失败就少一条时长数据
+    const startedAt = Date.now();
 
     try {
         let fetchUrl: string;
@@ -168,6 +181,8 @@ export async function simpleLLMCall(
             pushApiLog({
                 characterName: options?.label,
                 source: "background",
+                feature: options?.feature,
+                durationMs: Date.now() - startedAt,
                 model: config.defaultModel,
                 messages: messages.map(m => ({ role: m.role, content: m.content })),
                 rawResponse: `[API 错误 ${res.status}] ${errText.slice(0, 2000)}`,
@@ -184,6 +199,8 @@ export async function simpleLLMCall(
         pushApiLog({
             characterName: options?.label,
             source: "background",
+            feature: options?.feature,
+            durationMs: Date.now() - startedAt,
             model: config.defaultModel,
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: content ?? describeEmptyLLMResponse(data, finishReason, wasTruncated, config),
@@ -201,6 +218,8 @@ export async function simpleLLMCall(
         pushApiLog({
             characterName: options?.label,
             source: "background",
+            feature: options?.feature,
+            durationMs: Date.now() - startedAt,
             model: config.defaultModel,
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             rawResponse: `[请求失败] ${err instanceof Error ? err.message : String(err)}`,

@@ -30,6 +30,7 @@ import { RuntimeDiagnostics } from "./settings/runtime-diagnostics";
 import { PerformanceDiagnostics } from "./settings/performance-diagnostics";
 import { DeviceCompatibilitySettings } from "./settings/device-compatibility-settings";
 import { WidgetSettings } from "./widget/widget-settings";
+import { ApiUsagePage } from "./settings/api-usage-page";
 import { fetchIsAdmin } from "@/lib/moderation-client";
 import { PageShell } from "./ui/page-shell";
 import { CardGrid, FeaturedCard, type CardItem, type FeaturedCardItem } from "./ui/card-grid";
@@ -72,6 +73,7 @@ type SubPage =
     | "systemCalendar"
     | "screenshot"
     | "widget"
+    | "apiUsage"
     | "diagnostics"
     | "compatibility"
     | "about";
@@ -94,6 +96,7 @@ const SETTINGS_MENU = [
     { id: "systemCalendar", icon: CalendarDays, label: "系统日历", desc: "让角色知道你的日程、记下纪念日", iconColor: BINDING_ACCENTS.memory , glass: "" },
     { id: "screenshot", icon: Camera, label: "截屏", desc: "让角色看一眼你现在的屏幕", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "widget", icon: LayoutTemplate, label: "桌面小组件", desc: "角色留在桌面上的话", iconColor: BINDING_ACCENTS.memory , glass: "" },
+    { id: "apiUsage", icon: Activity, label: "调用与用量", desc: "查哪个功能花了多少 token", iconColor: BINDING_ACCENTS.api , glass: "" },
     { id: "agentComputer", icon: Laptop, label: "角色电脑", desc: "云端小电脑（自部署）", iconColor: BINDING_ACCENTS.memory , glass: "agent-computer" },
     { id: "identity", icon: UserCircle, label: "用户身份", desc: "个人信息", iconColor: BINDING_ACCENTS.identity , glass: "identity" },
     { id: "diagnostics", icon: Smartphone, label: "故障诊断与设备兼容性", desc: "运行故障检查、屏幕适配、原生接口能力与诊断报告", iconColor: BINDING_ACCENTS.memory , glass: "" },
@@ -356,6 +359,8 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                 return <ScreenshotSettings onNotice={onNotice} />;
             case "widget":
                 return <WidgetSettings onNotice={onNotice} />;
+            case "apiUsage":
+                return <ApiUsagePage />;
             case "diagnostics":
                 return <div style={{ display: "grid", gap: 18 }}><PerformanceDiagnostics /><RuntimeDiagnostics onNotice={onNotice} /><div style={{ borderTop: "1px solid var(--border, rgba(128,128,128,.18))", paddingTop: 18 }}><DeviceCompatibilitySettings onNotice={onNotice} /></div></div>;
             case "agentComputer":
@@ -527,7 +532,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                             </div>
                             <div className="mt-[10px]">
                                 <CardGrid
-                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "systemCalendar", "screenshot", "widget"].includes(item.id)).map(makeCardItem)}
+                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "systemCalendar", "screenshot", "widget", "apiUsage"].includes(item.id)).map(makeCardItem)}
                                 />
                             </div>
                             <div className="mt-[10px]">
