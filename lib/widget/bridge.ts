@@ -191,7 +191,10 @@ export function syncWidgetProfilesToNative(): void {
       characterId: profile.characterId, text: "还没有新的留言", status: "", avatar: character?.avatar ?? "",
       updatedAt: new Date().toISOString(), source: "manual" as const,
     };
-    const html = injectWidgetCss(renderWidgetHtml(profile.template, data, character?.name ?? "角色", "你"), profile.customCss);
+    const html = injectWidgetCss(
+      renderWidgetHtml(profile.template, data, character?.name ?? "角色", "你", { imageDataUrl: profile.imageDataUrl }),
+      profile.customCss,
+    );
     pushWidgetProfileHtml(profile.id, html, { widthDp: profile.widthDp, heightDp: profile.heightDp, scale: profile.scale });
   }
 }

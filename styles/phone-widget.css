@@ -255,3 +255,71 @@
   min-width: 0;
   color: var(--c-text-secondary, #8e8e98);
 }
+
+/* ── 我的款式（一个款式 = 一套独立的桌面小组件） ── */
+.ws-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ws-profile-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--c-fill, #f0f0f4);
+}
+.ws-profile-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ws-profile-text b {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--c-text, #17171c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-profile-text span {
+  font-size: 11px;
+  color: var(--c-text-secondary, #8e8e98);
+  font-variant-numeric: tabular-nums;
+}
+.ws-empty-hint {
+  text-align: center;
+  padding: 6px 0;
+}
+
+/* 配图预览：缩略图 + 体积，选完能立刻确认挑对了图 */
+.ws-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ws-image-preview img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  background: var(--c-fill, #f0f0f4);
+}
+.ws-image-preview span {
+  font-size: 11px;
+  color: var(--c-text-secondary, #8e8e98);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 模板说明里的占位符代码 */
+.ws-row-text p code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  background: var(--c-fill, #f0f0f4);
+  border-radius: 5px;
+  padding: 1px 5px;
+}

@@ -23,6 +23,12 @@ export type WidgetProfile = {
   widthDp: number;
   heightDp: number;
   scale: number;
+  /**
+   * 从图库选的配图（data URL，已压过尺寸）。
+   * 原生渲染是 blockNetworkLoads=true，模板里的 http 图片一律不加载，
+   * 所以配图必须自带数据，和头像同一个道理。
+   */
+  imageDataUrl?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -16,6 +16,13 @@ const DATA_BY_CHARACTER_KEY = "ai_phone_widget_data_by_character_v1";
 const DATA_BY_PROFILE_KEY = "ai_phone_widget_data_by_profile_v1";
 const PROFILES_KEY = "ai_phone_widget_profiles_v1";
 
+/**
+ * 单个配置的配图 data URL 字符上限。
+ * 原生侧整份 HTML 要过一次 JS 桥、贴进 RemoteViews 还有 1MB 的 Binder 上限，
+ * 配图加上模板和头像必须留余量，所以这里硬截一道。
+ */
+const MAX_PROFILE_IMAGE_CHARS = 900_000;
+
 registerKvMigration(CONFIG_KEY);
 registerKvMigration(DATA_KEY);
 registerKvMigration(DATA_BY_CHARACTER_KEY);
@@ -137,6 +144,7 @@ export function loadWidgetProfiles(): WidgetProfile[] {
         widthDp: clamp(item.widthDp, WIDGET_LIMITS.widthDp.min, WIDGET_LIMITS.widthDp.max, WIDGET_DEFAULTS.widthDp),
         heightDp: clamp(item.heightDp, WIDGET_LIMITS.heightDp.min, WIDGET_LIMITS.heightDp.max, WIDGET_DEFAULTS.heightDp),
         scale: clamp(item.scale, WIDGET_LIMITS.scale.min, WIDGET_LIMITS.scale.max, WIDGET_DEFAULTS.scale),
+        imageDataUrl: typeof item.imageDataUrl === "string" ? item.imageDataUrl.slice(0, MAX_PROFILE_IMAGE_CHARS) : "",
         createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
         updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
       }));
@@ -153,6 +161,7 @@ export function saveWidgetProfiles(profiles: WidgetProfile[]): void {
     name: profile.name.trim().slice(0, 60) || "自定义小组件",
     template: profile.template.slice(0, 30000),
     customCss: profile.customCss.slice(0, 20000),
+    imageDataUrl: typeof profile.imageDataUrl === "string" ? profile.imageDataUrl.slice(0, MAX_PROFILE_IMAGE_CHARS) : "",
     updatedAt: now,
   }));
   kvSet(PROFILES_KEY, JSON.stringify(safe));

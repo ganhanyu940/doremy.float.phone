@@ -61,6 +61,10 @@ export const WIDGET_PLACEHOLDERS = [
   { token: "{{lifeLocation}}", desc: "玩家当前实际地点；没有记录时为空" },
   { token: "{{lifeNext}}", desc: "下一段生活日程的时间和名称" },
   { token: "{{lifeLine}}", desc: "适合直接放在桌面组件底部的一行生活状态" },
+  { token: "{{image}}", desc: "该配置从图库选的配图地址（data URL）；没选时是空串" },
+  { token: "{{imageInner}}", desc: "已拼好的配图块（有图放 <img>，没图是空串）" },
+  { token: "{{hasImage}}", desc: "有配图时是 1，否则 0（配合 CSS 用）" },
+  { token: "{{imageCss}}", desc: "配图专用的 CSS 变量声明，可直接塞进 style 属性" },
 ] as const;
 
 /**
@@ -221,6 +225,11 @@ export function renderWidgetHtml(
   data: WidgetData,
   charName: string,
   userName: string,
+  /**
+   * 可选：这份配置自己的配图（从图库选的 data URL）。
+   * 现有调用点都只传前四个参数，多一个可选参数不改变它们的行为。
+   */
+  options: { imageDataUrl?: string } = {},
 ): string {
   const name = charName || "角色";
   const hasAvatar = Boolean(data.avatar);
@@ -250,6 +259,15 @@ export function renderWidgetHtml(
   const statusChip = hasStatus
     ? `<div class="status">${esc(data.status)}</div>`
     : "";
+
+  // 配图：和头像一样只认 data URL（原生渲染不加载网络图片）。
+  // imageCss 设计成「变量声明」，用户想在自定义模板里当背景图时
+  // 直接 style="--image: {{imageCss}}" 或 background-image: var(--image) 就行。
+  const imageDataUrl = (options.imageDataUrl || "").trim();
+  const hasImage = Boolean(imageDataUrl);
+  const imageInner = hasImage ? `<img src="${esc(imageDataUrl)}" alt="">` : "";
+  const imageCss = hasImage ? `--image: url("${esc(imageDataUrl)}")` : "";
+  const imageSrc = hasImage ? imageDataUrl : "";
 
   const lifeState = loadVirtualLifeState();
   let lifeTime = "", lifeActivity = "", lifeLocation = "", lifeNext = "", lifeLine = "";
@@ -325,5 +343,9 @@ export function renderWidgetHtml(
     .replace(/\{\{initial\}\}/g, initial)
     .replace(/\{\{time\}\}/g, esc(describeTime(data.updatedAt)))
     .replace(/\{\{hasStatus\}\}/g, hasStatus ? "1" : "0")
-    .replace(/\{\{hasAvatar\}\}/g, hasAvatar ? "1" : "0");
+    .replace(/\{\{hasAvatar\}\}/g, hasAvatar ? "1" : "0")
+    .replace(/\{\{image\}\}/g, esc(imageSrc))
+    .replace(/\{\{imageInner\}\}/g, imageInner)
+    .replace(/\{\{imageCss\}\}/g, imageCss)
+    .replace(/\{\{hasImage\}\}/g, hasImage ? "1" : "0");
 }

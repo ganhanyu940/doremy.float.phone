@@ -12,7 +12,7 @@
 //
 // 挂载方式与 DeviceActionSettings 一致：直接渲染内容，不套 PageShell、不收 onBack。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
@@ -31,6 +31,8 @@ import {
   saveWidgetProfile,
   syncWidgetProfilesToNative,
   type WidgetProfile,
+  describeImageSize,
+  pickWidgetImage,
   hasWidgetBridge,
   isWidgetPlaced,
   loadWidgetConfig,
@@ -66,6 +68,9 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
   const [diagnosis, setDiagnosis] = useState<string[] | null>(null);
   const [profiles, setProfiles] = useState<WidgetProfile[]>(() => loadWidgetProfiles());
   const [profileDraft, setProfileDraft] = useState<WidgetProfile | null>(null);
+  /** 选了图正在压缩时的提示（压大图要几百毫秒，没反馈会以为没反应） */
+  const [imageBusy, setImageBusy] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   const characters = useMemo(() => loadCharacters().map(c => ({ id: c.id, name: c.name, avatar: c.avatar ?? "" })), []);
 
@@ -214,13 +219,35 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
       source: "manual" as const,
     };
     return injectWidgetCss(
-      renderWidgetHtml(profileDraft.template || DEFAULT_WIDGET_TEMPLATE, data, character?.name ?? "角色", "你"),
+      renderWidgetHtml(
+        profileDraft.template || DEFAULT_WIDGET_TEMPLATE,
+        data,
+        character?.name ?? "角色",
+        "你",
+        { imageDataUrl: profileDraft.imageDataUrl },
+      ),
       profileDraft.customCss,
     );
   }, [profileDraft, characters, dataVersion]);
 
   const patchProfileDraft = (patch: Partial<WidgetProfile>) => {
     setProfileDraft(current => current ? { ...current, ...patch } : current);
+  };
+
+  /** 从图库挑一张图作为这个款式的配图。压到 720px / JPEG 再存 data URL。 */
+  const pickProfileImage = async (file: File | null | undefined) => {
+    if (!file) return;
+    setImageBusy(true);
+    try {
+      const result = await pickWidgetImage(file);
+      if (!result.ok) { onNotice?.(result.reason); return; }
+      patchProfileDraft({ imageDataUrl: result.dataUrl });
+      onNotice?.("配图已载入（压到 " + describeImageSize(result.bytes) + "），保存配置后生效。");
+    } finally {
+      setImageBusy(false);
+      // 清空 input，同一个文件再选一次也能触发 change
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
   };
 
   const persistProfileDraft = () => {
@@ -403,10 +430,204 @@ export function WidgetSettings({ onNotice }: { onNotice?: (msg: string) => void 
                 <button type="button" className="ws-link" onClick={placeWidget}>{placed ? "新建独立实例" : "创建桌面实例"}</button>
               </div>
             )}
-            <p className="ws-hint">桌面实例共用当前角色、内容和样式；不支持按实例分别配置。</p>
+            <p className="ws-hint">
+              这是在「默认款式」上添加桌面实例。想在同一张桌面上放不同样子的小组件，
+              用下面的「我的款式」——每个款式可以各自选角色、写模板、配图、单独添加。
+            </p>
           </>
         ) : null}
       </div>
+
+      {/* ── 我的款式：一个款式 = 一套独立的桌面小组件 ── */}
+      {/*
+        底层存储和原生桥本来就按 profile 分开（各自一份 HTML/PNG 缓存、
+        系统添加时会让你选绑哪一套），这里只是把已有的能力接出界面。
+        所以想在一张桌面上放好几种样子，靠的就是建多个款式。
+      */}
+      <div className="ws-card">
+        <div className="ws-card-head">
+          <span className="ws-card-title">我的款式</span>
+          <button type="button" className="ws-link" onClick={createProfile}>＋ 新建款式</button>
+        </div>
+        <p className="ws-hint">
+          每个款式是一套独立的桌面小组件：自己的角色、模板、CSS、尺寸和配图。
+          想让桌面同时有好几种样子，就建几个款式分别添加到桌面。
+        </p>
+        {!bridgeOk ? (
+          <p className="ws-warn">当前 App 版本没有小组件桥：款式可以编辑和保存，但添加不到桌面——需要更新安卓壳。</p>
+        ) : null}
+
+        {profiles.length === 0 ? (
+          <p className="ws-hint ws-empty-hint">还没有独立款式，点右上角「＋ 新建款式」。</p>
+        ) : (
+          <div className="ws-profile-list">
+            {profiles.map(profile => (
+              <div className="ws-profile-item" key={profile.id}>
+                <div className="ws-profile-text">
+                  <b>{profile.name}</b>
+                  <span>
+                    {(characters.find(c => c.id === profile.characterId)?.name ?? "未指定角色")}
+                    {" · "}{profile.widthDp}×{profile.heightDp} dp
+                    {profile.imageDataUrl ? " · 有配图" : ""}
+                  </span>
+                </div>
+                <button type="button" className="ws-link" onClick={() => setProfileDraft(profile)}>编辑</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── 款式编辑器 ── */}
+      {profileDraft ? (
+        <div className="ws-card">
+          <div className="ws-card-head">
+            <span className="ws-card-title">编辑款式</span>
+            <button type="button" className="ws-link" onClick={() => setProfileDraft(null)}>收起</button>
+          </div>
+
+          <label className="ws-field">
+            款式名称
+            <input
+              value={profileDraft.name}
+              maxLength={60}
+              onChange={e => patchProfileDraft({ name: e.target.value })}
+            />
+          </label>
+
+          <label className="ws-field">
+            显示哪个角色
+            <select
+              value={profileDraft.characterId}
+              onChange={e => patchProfileDraft({ characterId: e.target.value })}
+            >
+              {characters.length === 0 ? <option value="">还没有角色</option> : null}
+              {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+
+          <div className="ws-grid2">
+            <label className="ws-field">
+              宽（dp）
+              <input type="number" min={WIDGET_LIMITS.widthDp.min} max={WIDGET_LIMITS.widthDp.max}
+                value={profileDraft.widthDp}
+                onChange={e => patchProfileDraft({
+                  widthDp: clampInt(Number(e.target.value) || profileDraft.widthDp, WIDGET_LIMITS.widthDp.min, WIDGET_LIMITS.widthDp.max),
+                })} />
+            </label>
+            <label className="ws-field">
+              高（dp）
+              <input type="number" min={WIDGET_LIMITS.heightDp.min} max={WIDGET_LIMITS.heightDp.max}
+                value={profileDraft.heightDp}
+                onChange={e => patchProfileDraft({
+                  heightDp: clampInt(Number(e.target.value) || profileDraft.heightDp, WIDGET_LIMITS.heightDp.min, WIDGET_LIMITS.heightDp.max),
+                })} />
+            </label>
+          </div>
+
+          {/* 预览：和真实渲染同一套输入，预览什么样桌面就什么样 */}
+          <div className="ws-preview-stage">
+            <iframe
+              key={profilePreviewHtml}
+              title="款式预览"
+              className="ws-preview-frame"
+              srcDoc={profilePreviewHtml}
+              sandbox=""
+              style={{ width: `${profileDraft.widthDp}px`, height: `${profileDraft.heightDp}px` }}
+            />
+          </div>
+
+          {/* 配图：从相册选一张，压成 data URL 后进模板的 {{imageInner}} 或 {{imageCss}} */}
+          <div className="ws-row">
+            <div className="ws-row-text">
+              <b>配图</b>
+              <p>
+                模板里用 <code>{"{{imageInner}}"}</code> 直接放图，
+                或用 <code>{"{{imageCss}}"}</code> 当背景。
+                图片会压到 720px 存本地，不上云。
+              </p>
+            </div>
+          </div>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={e => { void pickProfileImage(e.target.files?.[0]); }}
+          />
+          <div className="ws-preview-actions">
+            <button
+              type="button"
+              className="ws-btn ghost"
+              disabled={imageBusy}
+              onClick={() => imageInputRef.current?.click()}
+            >
+              {imageBusy ? "正在处理…" : profileDraft.imageDataUrl ? "换一张图" : "从相册选图"}
+            </button>
+            {profileDraft.imageDataUrl ? (
+              <button
+                type="button"
+                className="ws-btn ghost"
+                onClick={() => patchProfileDraft({ imageDataUrl: "" })}
+              >
+                移除配图
+              </button>
+            ) : null}
+          </div>
+          {profileDraft.imageDataUrl ? (
+            <div className="ws-image-preview">
+              <img src={profileDraft.imageDataUrl} alt="配图预览" />
+              <span>约 {describeImageSize(profileDraft.imageDataUrl.length)}</span>
+            </div>
+          ) : null}
+
+          <label className="ws-field">
+            HTML 模板
+            <textarea
+              className="ws-template"
+              spellCheck={false}
+              rows={12}
+              value={profileDraft.template || DEFAULT_WIDGET_TEMPLATE}
+              onChange={e => patchProfileDraft({ template: e.target.value })}
+            />
+          </label>
+          <label className="ws-field">
+            附加 CSS（可选，不想改上面的结构时用它覆盖样式）
+            <textarea
+              className="ws-template"
+              spellCheck={false}
+              rows={5}
+              value={profileDraft.customCss}
+              onChange={e => patchProfileDraft({ customCss: e.target.value })}
+            />
+          </label>
+
+          <div className="ws-template-actions">
+            <button
+              type="button"
+              className="ws-btn ghost"
+              onClick={() => patchProfileDraft({
+                template: DEFAULT_WIDGET_TEMPLATE,
+                customCss: "",
+              })}
+            >
+              套用内置模板
+            </button>
+            <button type="button" className="ws-btn ghost" onClick={persistProfileDraft}>保存配置</button>
+          </div>
+          <div className="ws-template-actions">
+            <button type="button" className="ws-btn" onClick={pushProfileDraft}>推送到桌面</button>
+            <button type="button" className="ws-btn" onClick={placeProfileDraft}>添加到真实桌面</button>
+          </div>
+          <div className="ws-template-actions">
+            <button type="button" className="ws-btn ghost" onClick={removeProfileDraft}>删除这个款式</button>
+          </div>
+          <p className="ws-hint">
+            「添加到真实桌面」每次都会新建一个独立实例，同一套样式想放两块也可以。
+            系统添加小组件时，会让你选这个实例用哪一套款式。
+          </p>
+        </div>
+      ) : null}
 
       {config.enabled ? (
         <>
