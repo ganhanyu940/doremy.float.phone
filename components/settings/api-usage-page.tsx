@@ -26,6 +26,7 @@ import {
   type UsageWindowId,
 } from "@/lib/api-usage-stats";
 import {
+  costOfLog,
   createEmptyRule,
   formatMoney,
   loadPricing,
@@ -67,18 +68,7 @@ function LogRow({ log, onOpen, pricing }: { log: DebugInfo; onOpen: () => void; 
       </span>
       <span className="au-log-tokens">
         {tokenText}
-        <i className="au-log-cost">
-          {formatMoney(
-            rule.mode === "perCall"
-              ? rule.perCallPrice
-              : (() => {
-                  // 单条费用直接用聚合函数算，保证与总计口径一致
-                  const one = summarizeCost([log], pricing, resolveLogFeature);
-                  return one.total;
-                })(),
-            pricing.currency,
-          )}
-        </i>
+        <i className="au-log-cost">{formatMoney(costOfLog(log, pricing), pricing.currency)}</i>
       </span>
     </button>
   );

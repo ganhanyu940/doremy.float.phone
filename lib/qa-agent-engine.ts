@@ -400,8 +400,10 @@ async function requestQaCompletion(
             usage: hasUsage ? {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
+                // ?? 和 || 不能不加括号混用（TS5076）。这里要的语义是：
+                // 有 total 就用 total，否则用输入+输出之和，和算出 0 就交给 undefined。
                 total_tokens: usage.total_tokens
-                    ?? ((usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)) || undefined,
+                    ?? (((usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)) || undefined),
                 cached_tokens: usage.cached_tokens,
             } : undefined,
         });
@@ -411,8 +413,9 @@ async function requestQaCompletion(
         const streamRequest = buildProviderRequest(apiConfig, null, messages, { stream: true, maxTokens });
         if (streamRequest.providerKind === "openai-compatible") {
             const body = streamRequest.body as Record<string, unknown>;
-            const options = (body.stream_options as Record<string, unknown>) ?? {};
-            body.stream_options = { ...options, include_usage: true };
+            // 变量名不能叫 options：会遮蔽本函数的 options 参数，下面 options?.callbacks 就取错了
+            const streamOptions = (body.stream_options as Record<string, unknown>) ?? {};
+            body.stream_options = { ...streamOptions, include_usage: true };
         }
         const result = await streamQaProviderRequest(streamRequest, { signal: options?.signal }, options?.callbacks);
         if (!result.content.trim()) throw new Error("LLM 返回了空内容");
