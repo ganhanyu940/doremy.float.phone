@@ -93,11 +93,47 @@ function qaStreamIdleMs(): number {
     return 90_000;
 }
 
+/**
+ * 流式响应里的 usage。
+ *
+ * 麻烦在于各家的给法完全不同：
+ *   OpenAI 兼容  最后一个 chunk 带 usage（且要先请求 stream_options.include_usage）
+ *   Anthropic    message_start 给输入、message_delta 给输出
+ *   Gemini       每个 chunk 都带 usageMetadata，且是累计值
+ * 所以这里做成「来一个就更新一个」，最后取到的那份即为最终值。
+ */
+type StreamUsage = { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cached_tokens?: number };
+
+function mergeStreamUsage(target: StreamUsage, parsed: unknown): void {
+    if (!parsed || typeof parsed !== "object") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d = parsed as any;
+    const usage = d?.usage ?? d?.usageMetadata ?? d?.message?.usage;
+    if (usage && typeof usage === "object") {
+        const prompt = usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount;
+        const completion = usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount;
+        const total = usage.total_tokens ?? usage.totalTokenCount;
+        const cached = usage.prompt_tokens_details?.cached_tokens
+            ?? usage.prompt_cache_hit_tokens
+            ?? usage.cache_read_input_tokens
+            ?? usage.cachedContentTokenCount;
+        if (typeof prompt === "number") target.prompt_tokens = prompt;
+        if (typeof completion === "number") target.completion_tokens = completion;
+        if (typeof total === "number") target.total_tokens = total;
+        if (typeof cached === "number" && cached > 0) target.cached_tokens = cached;
+    }
+    // Anthropic 的 message_delta 把最终输出量放在 usage.output_tokens
+    const deltaUsage = d?.delta?.usage;
+    if (deltaUsage && typeof deltaUsage === "object") {
+        if (typeof deltaUsage.output_tokens === "number") target.completion_tokens = deltaUsage.output_tokens;
+    }
+}
+
 async function streamQaProviderRequest(
     request: LlmRequestPayload,
     options?: { signal?: AbortSignal },
     callbacks?: QaStreamCallbacks,
-): Promise<{ content: string; reasoning: string }> {
+): Promise<{ content: string; reasoning: string; usage?: StreamUsage }> {
     const llmAbort = new AbortController();
     const llmTimeout = setTimeout(() => llmAbort.abort(), 500_000);
     const abortHandler = () => llmAbort.abort();
@@ -117,6 +153,7 @@ async function streamQaProviderRequest(
 
     let content = "";
     let reasoning = "";
+    const usage: StreamUsage = {};
 
     try {
         const response = await fetchLlmPayload(request, { signal: llmAbort.signal });
@@ -130,6 +167,7 @@ async function streamQaProviderRequest(
         // 容错解析：中转把长 JSON 行切开时做碎片重组，不再静默丢增量（见 sse-json.ts）
         const sseParser = createSseJsonParser();
         const handleParsed = async (parsed: unknown) => {
+            mergeStreamUsage(usage, parsed);
             const delta = parseProviderStreamDelta(request.providerKind, parsed);
             if (delta.reasoning) {
                 reasoning += delta.reasoning;
@@ -164,7 +202,8 @@ async function streamQaProviderRequest(
             await handleParsed(parsed);
         }
 
-        return { content: stripHallucinatedTimestamps(content), reasoning };
+        const finalUsage = Object.keys(usage).length > 0 ? usage : undefined;
+        return { content: stripHallucinatedTimestamps(content), reasoning, usage: finalUsage };
     } catch (error) {
         if (idleAborted && !options?.signal?.aborted) {
             throw new Error(`流式响应停滞超过 ${Math.round(idleMs / 1000)} 秒（常见于中转站开了响应缓冲），已中断并改用非流式重取`);
@@ -332,12 +371,25 @@ async function requestQaCompletion(
     // 输出护栏：配置了「单次最大输出 token」时每次请求带 max_tokens，
     // 写超被服务端安全截断（agent 循环里会自动续接），而不是拖垮整轮
     const maxTokens = getQaMaxOutputTokens() ?? undefined;
-    // 工坊调用记录：与角色聊天/记忆等底层日志隔离，只进工坊右上角「调用记录」
-    const logQaCall = (entry: { model: string; messages: { role: string; content: string | LLMContentPart[]; marker?: string }[]; rawResponse: string; reasoning?: string }) => {
+    // 工坊调用记录：与角色聊天/记忆等底层日志隔离，只进工坊右上角「调用记录」。
+    // usage / durationMs 必须带上——「调用与用量」页要靠它算钱，
+    // 早期没传导致工坊的调用在用量页里显示成 0 token。
+    const startedAt = Date.now();
+    const logQaCall = (entry: {
+        model: string;
+        messages: { role: string; content: string | LLMContentPart[]; marker?: string }[];
+        rawResponse: string;
+        reasoning?: string;
+        usage?: StreamUsage;
+    }) => {
+        const usage = entry.usage;
+        const hasUsage = usage && (usage.prompt_tokens || usage.completion_tokens || usage.total_tokens);
         pushApiLog({
             characterName: "工坊",
             source: "qa",
             channel: "qa",
+            feature: "工坊答疑",
+            durationMs: Date.now() - startedAt,
             model: entry.model,
             messages: entry.messages.map(m => ({
                 role: m.role,
@@ -345,13 +397,32 @@ async function requestQaCompletion(
             })),
             rawResponse: entry.rawResponse,
             reasoning: entry.reasoning?.trim() || undefined,
+            usage: hasUsage ? {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens
+                    ?? ((usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0)) || undefined,
+                cached_tokens: usage.cached_tokens,
+            } : undefined,
         });
     };
     try {
+        // 让 OpenAI 兼容渠道在流末尾回 usage（不加这个字段，Chunk 里就没有用量）
         const streamRequest = buildProviderRequest(apiConfig, null, messages, { stream: true, maxTokens });
+        if (streamRequest.providerKind === "openai-compatible") {
+            const body = streamRequest.body as Record<string, unknown>;
+            const options = (body.stream_options as Record<string, unknown>) ?? {};
+            body.stream_options = { ...options, include_usage: true };
+        }
         const result = await streamQaProviderRequest(streamRequest, { signal: options?.signal }, options?.callbacks);
         if (!result.content.trim()) throw new Error("LLM 返回了空内容");
-        logQaCall({ model: apiConfig.defaultModel, messages: streamRequest.messagesForLog, rawResponse: result.content, reasoning: result.reasoning });
+        logQaCall({
+            model: apiConfig.defaultModel,
+            messages: streamRequest.messagesForLog,
+            rawResponse: result.content,
+            reasoning: result.reasoning,
+            usage: result.usage,
+        });
         return result;
     } catch (streamError) {
         if (options?.signal?.aborted) throw streamError;
@@ -364,7 +435,13 @@ async function requestQaCompletion(
         if (!content) throw new Error("LLM 返回了空内容");
         const visible = stripThinkBlocks(content);
         if (visible) await options?.callbacks?.onDelta?.(visible);
-        logQaCall({ model: apiConfig.defaultModel, messages: request.messagesForLog, rawResponse: content, reasoning: parsed.reasoning });
+        logQaCall({
+            model: apiConfig.defaultModel,
+            messages: request.messagesForLog,
+            rawResponse: content,
+            reasoning: parsed.reasoning,
+            usage: parsed.usage,
+        });
         return { content, reasoning: parsed.reasoning || "" };
     }
 }

@@ -331,3 +331,144 @@
   font-size: 10.5px;
   color: var(--c-text-secondary, #8e8e98);
 }
+
+/* ── 费用卡：和 token 卡区分开，一眼能找到钱 ── */
+.au-card-cost {
+  background: linear-gradient(135deg, #f4f1ff, #eef7ff);
+  grid-column: span 2;
+}
+.au-card-cost b {
+  color: #5a3fd8;
+  font-size: 22px;
+}
+
+.au-log-tokens {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.au-log-cost {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--c-accent, #7a5af8);
+  opacity: 0.9;
+}
+
+/* ── 费用说明条 ── */
+.au-cost-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--c-text-secondary, #8e8e98);
+  background: var(--c-inset, #f2f2f6);
+  border-radius: 12px;
+  padding: 9px 12px;
+}
+.au-cost-bar span { flex: 1; min-width: 0; }
+.au-cost-bar .au-link { flex: 0 0 auto; }
+
+/* ── 单价设置 ── */
+.au-pricing { gap: 12px; }
+.au-hint {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--c-text-secondary, #8e8e98);
+}
+.au-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--c-line, #f0f0f4);
+}
+.au-rule:last-of-type { border-bottom: none; }
+.au-rule-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.au-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--c-fill, #f0f0f4);
+  color: var(--c-text, #17171c);
+  outline: none;
+}
+.au-rule-del {
+  border: none;
+  background: none;
+  color: #d9534f;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 2px;
+  flex: 0 0 auto;
+}
+.au-seg {
+  display: flex;
+  gap: 6px;
+}
+.au-seg-btn {
+  flex: 1;
+  border: none;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--c-fill, #f0f0f4);
+  color: var(--c-text-secondary, #8e8e98);
+  cursor: pointer;
+}
+.au-seg-btn[data-active] {
+  background: var(--c-accent, #7a5af8);
+  color: #fff;
+}
+.au-price-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.au-price-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.au-price-grid span {
+  font-size: 10px;
+  color: var(--c-text-secondary, #8e8e98);
+}
+.au-price-grid input {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--c-fill, #f0f0f4);
+  color: var(--c-text, #17171c);
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.au-reset {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: var(--c-text-secondary, #8e8e98);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 0;
+}

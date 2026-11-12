@@ -12,7 +12,19 @@ export type DebugInfo = {
     messages: { role: string; content: string; marker?: string }[];
     rawResponse: string;
     timestamp: string;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    /**
+     * 服务商回的真实用量。
+     *
+     * cached_tokens 单独记：输入里命中提示缓存的那部分，多数服务商按 1/10 计价，
+     * 混进 prompt_tokens 里就算不清钱了（会按原价高估）。
+     * 字段名各家用得不一样，统一在采集时归一到这一个字段上。
+     */
+    usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+        cached_tokens?: number;
+    };
     /** 模型思维链（reasoning/CoT）原文，独立于回复内容存储，避免被清洗吞掉 */
     reasoning?: string;
     /** 调用来源：chat=聊天引擎、background=simpleLLMCall 后台功能（具体功能名看 characterName 标签）、qa=工坊答疑引擎 */
@@ -142,6 +154,28 @@ export function clearApiLogs(): void { try { kvRemove(API_LOGS_KEY); } catch { }
 /** 工坊专用调用记录（仅工坊 UI 读取，与底层日志完全隔离）。 */
 export function getQaApiLogs(): DebugInfo[] { return _loadLogs(QA_LOGS_KEY); }
 export function clearQaApiLogs(): void { try { kvRemove(QA_LOGS_KEY); } catch { } }
+
+/**
+ * 用量统计要看的全部记录：底层日志 + 工坊日志。
+ *
+ * 两个环在存储上必须隔离（工坊记录不该混进聊天页的「底层调用大模型日志」，
+ * 那边是排查聊天用的，掺进工坊噪音就没法看了）。但「用了多少 token」
+ * 这件事必须合并——工坊是真实的模型调用，一样花钱，漏掉它用户就会觉得
+ * 统计不准（这正是最初漏掉工坊的原因）。
+ *
+ * 合并后按时间升序，和 getApiLogs 的顺序保持一致，调用方不用关心来源。
+ */
+export function getApiLogsForUsage(): DebugInfo[] {
+    const merged = [..._loadLogs(API_LOGS_KEY), ..._loadLogs(QA_LOGS_KEY)];
+    merged.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+    return merged;
+}
+
+/** 清空用量相关的两个环（工坊记录一并清掉，否则「清空」后数字不归零）。 */
+export function clearAllUsageLogs(): void {
+    clearApiLogs();
+    clearQaApiLogs();
+}
 
 /** 追加一条调用日志（id/timestamp 自动生成、超限文本截断），超出数量/体积上限时裁掉最旧的记录。 */
 export function pushApiLog(entry: Omit<DebugInfo, "id" | "timestamp">): void {

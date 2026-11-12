@@ -16,11 +16,12 @@
  */
 
 import type { DebugInfo } from "./api-log-store";
+import { estimateTokens } from "./token-counter";
 
 /** 一条日志归到的功能名。老记录没有 feature 字段时按旧规则兜底。 */
 export function resolveLogFeature(log: DebugInfo): string {
   if (log.feature && log.feature.trim()) return log.feature.trim();
-  if (log.source === "qa") return "工坊答疑";
+  if (log.source === "qa" || log.channel === "qa") return "工坊答疑";
   if (log.source === "background") {
     // 老记录把功能名塞在 characterName 里
     return log.characterName?.trim() || "后台功能（未标注）";
@@ -34,8 +35,10 @@ export type FeatureUsage = {
   calls: number;
   promptTokens: number;
   completionTokens: number;
+  /** 输入里命中提示缓存的部分（已含在 promptTokens 内，不重复计） */
+  cachedTokens: number;
   totalTokens: number;
-  /** 没拿到 usage 的调用（服务商没回 usage 字段时） */
+  /** 没拿到 usage、数字为估算的调用数 */
   missingUsageCalls: number;
   lastAt: string;
 };
@@ -44,6 +47,7 @@ export type UsageSummary = {
   totalCalls: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
+  totalCachedTokens: number;
   totalTokens: number;
   missingUsageCalls: number;
   /** 按 token 从多到少 */
@@ -60,14 +64,27 @@ function num(value: unknown): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-/** 一次调用的 token 数：优先用服务商回的真实 usage，缺了就退回估算。 */
-function tokensOf(log: DebugInfo): { prompt: number; completion: number; total: number; real: boolean } {
+/**
+ * 一次调用的 token 数：优先用服务商回的真实 usage，缺了退回估算。
+ *
+ * 估算这一支是必要的：流式调用经常拿不到 usage（尤其工坊这类走流式的场景），
+ * 一条都不显示的话页面看起来像坏了。估算值会通过 real=false 标出来，
+ * 由展示层决定要不要标注「估算」。
+ */
+function tokensOf(log: DebugInfo): { prompt: number; completion: number; cached: number; total: number; real: boolean } {
   const usage = log.usage;
   const prompt = num(usage?.prompt_tokens);
   const completion = num(usage?.completion_tokens);
   const total = num(usage?.total_tokens) || prompt + completion;
-  if (total > 0) return { prompt, completion, total, real: true };
-  return { prompt: 0, completion: 0, total: 0, real: false };
+  const cached = Math.min(num(usage?.cached_tokens), prompt);
+  if (total > 0) return { prompt, completion, cached, total, real: true };
+
+  let estPrompt = 0;
+  for (const message of Array.isArray(log.messages) ? log.messages : []) {
+    estPrompt += estimateTokens(typeof message.content === "string" ? message.content : "") + 4;
+  }
+  const estCompletion = log.rawResponse ? estimateTokens(String(log.rawResponse)) : 0;
+  return { prompt: estPrompt, completion: estCompletion, cached: 0, total: estPrompt + estCompletion, real: false };
 }
 
 export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
@@ -77,6 +94,7 @@ export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
   let totalCalls = 0;
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
+  let totalCachedTokens = 0;
   let totalTokens = 0;
   let missingUsageCalls = 0;
 
@@ -86,6 +104,7 @@ export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
     totalCalls += 1;
     totalPromptTokens += tokens.prompt;
     totalCompletionTokens += tokens.completion;
+    totalCachedTokens += tokens.cached;
     totalTokens += tokens.total;
     if (!tokens.real) missingUsageCalls += 1;
 
@@ -94,6 +113,7 @@ export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
       calls: 0,
       promptTokens: 0,
       completionTokens: 0,
+      cachedTokens: 0,
       totalTokens: 0,
       missingUsageCalls: 0,
       lastAt: log.timestamp,
@@ -101,6 +121,7 @@ export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
     entry.calls += 1;
     entry.promptTokens += tokens.prompt;
     entry.completionTokens += tokens.completion;
+    entry.cachedTokens += tokens.cached;
     entry.totalTokens += tokens.total;
     if (!tokens.real) entry.missingUsageCalls += 1;
     if (log.timestamp > entry.lastAt) entry.lastAt = log.timestamp;
@@ -119,6 +140,7 @@ export function summarizeUsage(logs: DebugInfo[]): UsageSummary {
     totalCalls,
     totalPromptTokens,
     totalCompletionTokens,
+    totalCachedTokens,
     totalTokens,
     missingUsageCalls,
     byFeature: Array.from(byFeature.values()).sort((a, b) => b.totalTokens - a.totalTokens || b.calls - a.calls),

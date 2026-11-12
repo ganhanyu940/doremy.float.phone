@@ -228,7 +228,33 @@ export async function simpleLLMCall(
     }
 }
 
-export function extractUsage(data: Record<string, unknown>): { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined {
+/**
+ * 各家服务商的「缓存命中输入 token」字段名都不一样，这里统一归一化：
+ *   OpenAI           usage.prompt_tokens_details.cached_tokens
+ *   DeepSeek         usage.prompt_cache_hit_tokens
+ *   Anthropic        usage.cache_read_input_tokens
+ *   Gemini           usage.cachedContentTokenCount
+ * 取不到就是 0（不是所有渠道都支持缓存，没有是正常的）。
+ */
+function extractCachedTokens(usage: Record<string, unknown>): number | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const u = usage as any;
+    const candidates = [
+        u?.prompt_tokens_details?.cached_tokens,
+        u?.input_tokens_details?.cached_tokens,
+        u?.prompt_cache_hit_tokens,
+        u?.cache_read_input_tokens,
+        u?.cachedContentTokenCount,
+        u?.cached_tokens,
+    ];
+    for (const value of candidates) {
+        const n = Number(value);
+        if (Number.isFinite(n) && n > 0) return Math.floor(n);
+    }
+    return undefined;
+}
+
+export function extractUsage(data: Record<string, unknown>): { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cached_tokens?: number } | undefined {
     if (!data) return undefined;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const d = data as any;
@@ -238,6 +264,7 @@ export function extractUsage(data: Record<string, unknown>): { prompt_tokens?: n
         prompt_tokens: usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount,
         completion_tokens: usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount,
         total_tokens: usage.total_tokens ?? usage.totalTokenCount,
+        cached_tokens: extractCachedTokens(usage),
     };
 }
 
