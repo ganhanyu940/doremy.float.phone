@@ -204,17 +204,20 @@ class SystemTtsBridge(private val context: Context) {
         val tts = engine
         val array = JSONArray()
         if (tts != null && state == State.READY) {
+            // getVoices 在部分 ROM / 引擎未就绪时会抛 IllegalStateException，
+            // 也可能返回 null；两侧都兜住，诊断面板不该因为一个语音包字段崩掉。
             val voices = runCatching { tts.voices }.getOrNull()
             if (voices != null) {
                 for (voice in voices) {
                     runCatching {
+                        val localeTag = runCatching { voice.locale?.toLanguageTag().orEmpty() }.getOrDefault("")
                         array.put(
                             JSONObject()
-                                .put("name", voice.name.orEmpty())
-                                .put("locale", voice.locale?.toLanguageTag().orEmpty())
-                                .put("quality", voice.quality)
-                                .put("latency", voice.latency)
-                                .put("needsNetwork", voice.isNetworkConnectionRequired)
+                                .put("name", runCatching { voice.name.orEmpty() }.getOrDefault(""))
+                                .put("locale", localeTag)
+                                .put("quality", runCatching { voice.quality }.getOrDefault(0))
+                                .put("latency", runCatching { voice.latency }.getOrDefault(0))
+                                .put("needsNetwork", runCatching { voice.isNetworkConnectionRequired }.getOrDefault(false))
                         )
                     }
                 }
