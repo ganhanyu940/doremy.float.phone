@@ -37,6 +37,10 @@ type NativeShellBridge = {
   hasMicrophonePermission?: () => boolean;
   requestMicrophonePermission?: () => boolean;
   openAppPermissionSettings?: () => boolean;
+  isSpeechRecognitionAvailable?: () => boolean;
+  startSpeechRecognition?: (lang: string) => string;
+  stopSpeechRecognition?: () => void;
+  cancelSpeechRecognition?: () => void;
 };
 
 function nativeBridge(): NativeShellBridge | null {

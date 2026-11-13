@@ -44,8 +44,10 @@ android {
         // 1.0.30：系统 TTS 桥（用手机自带语音包朗读，免费/离线）+ 麦克风权限自查与恢复入口。
         //         此前 WebView 里 speechSynthesis.speak() 静默失败，市场里所有朗读类 APP 全哑。
         //         versionCode 必须递增：同号或回退会被 Android 拒绝覆盖安装（报「应用未安装」）。
-        versionCode 29
-        versionName "1.0.30"
+        // 1.0.31：系统语音识别桥（SpeechRecognizer，免费把说话转文字）。WebView 里
+        //         webkitSpeechRecognition 无后端，通话语音输入一直是「无法访问麦克风」。
+        versionCode 30
+        versionName "1.0.31"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

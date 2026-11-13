@@ -34,6 +34,12 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <!-- 系统语音识别引擎（见 SystemSttBridge）：同理，Android 11+ 不声明
+             就查不到识别服务，isRecognitionAvailable() 会返回 false，
+             表现为「这台手机没有可用的语音识别服务」。 -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
         <!-- 闹钟与倒计时：Android 11+ 有包可见性限制，不在 queries 里声明这两个
              意图，就「看不到」系统时钟 App，startActivity 会抛
              ActivityNotFoundException，被误报成「这台设备没有可用的时钟应用」。 -->

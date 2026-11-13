@@ -206,6 +206,16 @@ class MainActivity : AppCompatActivity() {
     private val systemTts by lazy { SystemTtsBridge(this) }
 
     /**
+     * 系统语音识别桥：用手机自带的识别引擎把说话转成文字（免费、通常可离线）。
+     *
+     * 和 TTS 同一个病根：Android System WebView 里 webkitSpeechRecognition
+     * 没有可用后端，start() 立刻以 audio-capture 失败，网页只能显示
+     * 「无法访问麦克风」，用户误以为是权限没给。只有原生 SpeechRecognizer
+     * 能真正开麦。注意：**它只给文字，不给音频**，发语音条仍走 getUserMedia。
+     */
+    private val systemStt by lazy { SystemSttBridge(this) }
+
+    /**
      * 睡眠读取权限的申请结果回调。
      *
      * Health Connect 的授权走它自己的 ActivityResultContract，不是系统的
@@ -1727,6 +1737,8 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         // 先停朗读再释放引擎：不 shutdown 会占着系统 TTS 服务，
         // 下次进来 init 可能拿到一个已被系统回收的绑定。
         runCatching { systemTts.shutdown() }
+        // 识别器同理：不销毁会一直占着麦克风，用户会以为麦克风坏了。
+        runCatching { systemStt.shutdown() }
         runCatching { sharedVideoExecutor.shutdownNow() }
         super.onDestroy()
     }
@@ -2124,6 +2136,35 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         /** 系统 TTS 状态摘要（诊断面板与「发音通道」卡片用）。 */
         @JavascriptInterface
         fun getSystemTtsState(): String = systemTts.stateJson().toString()
+
+        // ── 系统语音识别（手机自带引擎，免费把说话转文字）────
+        // 详细边界见 SystemSttBridge。识别结果走 window 的 `shell-stt` 事件：
+        // detail.type = start/speech/volume/partial/endOfSpeech/final/end/error。
+
+        /** 本机是否有可用的语音识别服务。 */
+        @JavascriptInterface
+        fun isSpeechRecognitionAvailable(): Boolean = systemStt.isAvailable()
+
+        /**
+         * 开始一次识别。
+         * @param lang BCP-47 语言标签，如 zh-CN / en-US。
+         * @return JSON: {"ok":true,"sessionId":"..."} 或 {"ok":false,"message":"..."}
+         *         结果通过 shell-stt 事件推送，不在这里同步返回。
+         */
+        @JavascriptInterface
+        fun startSpeechRecognition(lang: String): String = systemStt.start(lang).toString()
+
+        /** 结束采集（「松手发送」）：引擎随后给出 final 结果。 */
+        @JavascriptInterface
+        fun stopSpeechRecognition() {
+            systemStt.stop()
+        }
+
+        /** 取消本次识别并丢弃内容（「上滑取消」）。 */
+        @JavascriptInterface
+        fun cancelSpeechRecognition() {
+            systemStt.cancel()
+        }
 
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，
