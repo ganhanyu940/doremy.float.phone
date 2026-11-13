@@ -87,6 +87,7 @@ import {
 import { REALITY_BRIDGE_APP_EVENT_NAME, REALITY_BRIDGE_DATA_EVENT } from "@/lib/reality-bridge/types";
 import { OnlineRoomConnection, onlineCloudApi } from "@/lib/online-room-client";
 import { submitContentReport } from "@/lib/moderation-client";
+import { speakWithSystemVoice, stopSystemVoice, listSystemVoices, getSystemTtsState } from "@/lib/system-tts";
 
 type CustomAppRunnerProps = {
   app: InstalledCustomApp;
@@ -202,54 +203,130 @@ html, body { min-height: 100%; }
     reportError('未处理的 Promise 拒绝：' + String((reason && reason.message) || reason));
   });
 
-  // ── Web Speech TTS 自动垫片（支持 HelloWord 等背单词 App 原生朗读）──
+  // ── Web Speech TTS 垫片：让「直接用 speechSynthesis 朗读」的 APP 也能出声 ──
+  //
+  // 背景：Android System WebView 不带 Chromium 的语音合成组件扩展，于是
+  // speechSynthesis 对象存在、getVoices() 也可能有内容，但 speak() 静默失败。
+  // 市场里自己调 Web Speech 的 APP（背单词、点读、听力）在壳里全是哑的，
+  // 同一份页面在手机 Chrome 里却有声——差别就在这个组件。
+  //
+  // 修法：把 speak() 接到壳原生的 TextToSpeech（见 SystemTtsBridge）。
+  //
+  // 两条历史坑，这里都绕开了：
+  //   1. 不能直接摸 window.parent.AndroidShell —— 沙盒 iframe 是不透明源，
+  //      访问跨域父窗口的属性会抛 SecurityError（旧实现 try/catch 后静默跳过，
+  //      所以这段垫片从来没生效过）。
+  //   2. 壳以前根本没有 speakText。现在有了，且必须走 postMessage（request）。
   (function(){
     try {
-      var topShell = (window.parent && window.parent.AndroidShell) || (window.top && window.top.AndroidShell) || window.AndroidShell;
-      if (topShell && typeof topShell.speakText === 'function') {
-        var dummyVoices = [
-          { voiceURI: 'google-tts-us', name: 'Google US English (Native)', lang: 'en-US', localService: true, default: true },
-          { voiceURI: 'google-tts-zh', name: 'Google Chinese (Native)', lang: 'zh-CN', localService: true, default: false }
-        ];
-        if (!window.speechSynthesis) {
-          window.speechSynthesis = {
-            speaking: false,
-            paused: false,
-            pending: false,
-            onvoiceschanged: null,
-            getVoices: function() { return dummyVoices; },
-            speak: function(utterance) {
-              if (!utterance || !utterance.text) return;
-              var lang = utterance.lang || 'en-US';
-              var rate = utterance.rate || 1.0;
-              window.speechSynthesis.speaking = true;
-              topShell.speakText(utterance.text, lang, rate);
-              setTimeout(function(){
-                window.speechSynthesis.speaking = false;
-                if (typeof utterance.onend === 'function') utterance.onend({ type: 'end' });
-              }, Math.max(800, utterance.text.length * 80));
-            },
-            cancel: function() {
-              window.speechSynthesis.speaking = false;
-              if (typeof topShell.stopSpeaking === 'function') topShell.stopSpeaking();
-            },
-            pause: function() {},
-            resume: function() {}
-          };
-        }
-        if (!window.SpeechSynthesisUtterance) {
-          window.SpeechSynthesisUtterance = function(text) {
-            this.text = text || '';
-            this.lang = 'en-US';
-            this.rate = 1.0;
-            this.pitch = 1.0;
-            this.volume = 1.0;
-            this.onend = null;
-            this.onerror = null;
-            this.onstart = null;
-          };
-        }
+      // 原生 Web Speech 真能用（iOS Safari / 桌面浏览器）就不要覆盖它。
+      var nativeVoices = [];
+      try {
+        nativeVoices = window.speechSynthesis && window.speechSynthesis.getVoices
+          ? (window.speechSynthesis.getVoices() || []) : [];
+      } catch (e) { nativeVoices = []; }
+      if (nativeVoices.length > 0) return;
+
+      // 宿主的系统语音包清单（异步拉一次，同步接口先返回空/缓存）
+      var hostVoices = [];
+      var voicesReady = false;
+      var voiceWaiters = [];
+      function fireVoicesChanged(){
+        try {
+          if (typeof window.speechSynthesis.onvoiceschanged === 'function') window.speechSynthesis.onvoiceschanged();
+        } catch (e) {}
+        var waiters = voiceWaiters.slice();
+        voiceWaiters.length = 0;
+        for (var i = 0; i < waiters.length; i++) { try { waiters[i](); } catch (e) {} }
       }
+      function loadVoices(){
+        request('voice.systemVoices', {}).then(function(res){
+          var arr = (res && res.voices) || [];
+          hostVoices = arr.map(function(v){
+            return {
+              voiceURI: String(v.name || v.locale || 'system'),
+              name: String(v.name || '系统语音'),
+              lang: String(v.locale || 'en-US'),
+              localService: v.needsNetwork !== true,
+              default: false
+            };
+          });
+          if (hostVoices.length) hostVoices[0].default = true;
+          voicesReady = true;
+          fireVoicesChanged();
+        }).catch(function(){
+          voicesReady = true;
+          fireVoicesChanged();
+        });
+      }
+
+      var synth = {
+        speaking: false,
+        paused: false,
+        pending: false,
+        onvoiceschanged: null,
+        getVoices: function(){ return hostVoices.slice(); },
+        speak: function(utterance){
+          if (!utterance || !utterance.text) return;
+          var text = String(utterance.text);
+          var lang = utterance.lang || 'en-US';
+          var rate = typeof utterance.rate === 'number' && utterance.rate > 0 ? utterance.rate : 1.0;
+          synth.speaking = true;
+          if (typeof utterance.onstart === 'function') {
+            setTimeout(function(){ try { utterance.onstart({ type: 'start' }); } catch (e) {} }, 0);
+          }
+          // 纠正性兜底：壳若已在朗读，先把上一句停掉，避免连点时叠着念
+          request('voice.systemSpeak', { text: text, lang: lang, rate: rate, via: 'shim' })
+            .then(function(){ /* 真正读完由下面的时长兜底收尾 */ })
+            .catch(function(err){
+              synth.speaking = false;
+              if (typeof utterance.onerror === 'function') {
+                try { utterance.onerror({ type: 'error', error: (err && err.message) || 'synthesis-failed' }); } catch (e) {}
+              }
+            });
+          // 系统朗读没有可靠的跨帧结束回调，按字数估时长收尾，
+          // 让依赖 onend 的 APP（自动连读、翻页）能继续走下去。
+          var estimate = Math.max(600, Math.round(text.length * 110 / rate) + 260);
+          setTimeout(function(){
+            synth.speaking = false;
+            if (typeof utterance.onend === 'function') {
+              try { utterance.onend({ type: 'end' }); } catch (e) {}
+            }
+          }, estimate);
+        },
+        cancel: function(){
+          synth.speaking = false;
+          request('voice.systemStop', {}).catch(function(){});
+        },
+        pause: function(){},
+        resume: function(){}
+      };
+      try {
+        Object.defineProperty(window, 'speechSynthesis', {
+          value: synth, configurable: true, writable: true
+        });
+      } catch (e) {
+        window.speechSynthesis = synth;
+      }
+
+      if (!window.SpeechSynthesisUtterance) {
+        window.SpeechSynthesisUtterance = function(text){
+          this.text = text || '';
+          this.lang = 'en-US';
+          this.rate = 1.0;
+          this.pitch = 1.0;
+          this.volume = 1.0;
+          this.voice = null;
+          this.onend = null;
+          this.onerror = null;
+          this.onstart = null;
+          this.onpause = null;
+          this.onresume = null;
+          this.onboundary = null;
+        };
+      }
+
+      loadVoices();
     } catch(e) {
       console.warn('TTS polyfill injection skipped:', e);
     }
@@ -436,7 +513,13 @@ html, body { min-height: 100%; }
       play: function(payload){ return request('voice.play', payload || {}); },
       stopPlayback: function(payload){ return request('voice.stopPlayback', payload || {}); },
       pausePlayback: function(payload){ return request('voice.pausePlayback', payload || {}); },
-      resumePlayback: function(payload){ return request('voice.resumePlayback', payload || {}); }
+      resumePlayback: function(payload){ return request('voice.resumePlayback', payload || {}); },
+      // 系统语音（免费 / 离线 / 不消耗语音额度）。与上面的 tts 是两条不同通道：
+      // tts = 第三方 API（付费、音色可控）；system* = 手机自带语音包。
+      systemSpeak: function(payload){ return request('voice.systemSpeak', payload || {}); },
+      systemStop: function(){ return request('voice.systemStop', {}); },
+      systemVoices: function(){ return request('voice.systemVoices', {}); },
+      systemState: function(){ return request('voice.systemState', {}); }
     },
     calendar: {
       read: function(payload){ return request('calendar.read', payload || {}); },
@@ -1549,6 +1632,38 @@ export function CustomAppRunner({
       const entry = frameAudioChannelsRef.current.get(normalizeFrameAudioChannelName(record.channel));
       if (entry) { try { entry.el.pause(); } catch { /* ignore */ } }
       return { ok: true };
+    }
+    // ── 系统语音（免费、走手机自带语音包）──
+    // 与上面 voice.play 的代播不同：这里不产生音频数据，直接驱动系统 TTS 引擎。
+    // 安卓壳内走原生 TextToSpeech；浏览器里退回宿主页自己的 Web Speech。
+    if (action === "voice.systemSpeak") {
+      requirePermission("voice.system");
+      const text = String(record.text ?? "");
+      if (!text.trim()) throw new Error("voice.systemSpeak 需要 text。");
+      const lang = String(record.lang ?? "en-US").trim() || "en-US";
+      const rateNum = Number(record.rate);
+      const result = speakWithSystemVoice(text, {
+        lang,
+        rate: Number.isFinite(rateNum) && rateNum > 0 ? rateNum : 1,
+      });
+      if (!result.ok) {
+        throw new Error(result.reason || "系统语音不可用");
+      }
+      return { ok: true, channel: result.channel, utteranceId: result.utteranceId ?? "" };
+    }
+    if (action === "voice.systemStop") {
+      requirePermission("voice.system");
+      stopSystemVoice();
+      return { ok: true };
+    }
+    if (action === "voice.systemVoices") {
+      // 列表本身不含用户数据，但仍走同一权限，避免未声明权限的 APP 探测设备信息。
+      requirePermission("voice.system");
+      return { voices: listSystemVoices(), state: getSystemTtsState() };
+    }
+    if (action === "voice.systemState") {
+      requirePermission("voice.system");
+      return getSystemTtsState();
     }
     if (action === "voice.resumePlayback") {
       requirePermission("voice.tts");

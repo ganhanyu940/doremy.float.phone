@@ -233,6 +233,7 @@ function normalizePermission(value: unknown): CustomAppPermission | null {
     "voice.stt",
     "voice.clone",
     "voice.readProfiles",
+    "voice.system",
     "user.profile.read",
     "user.persona.read",
     "user.preferences.read",

@@ -196,6 +196,16 @@ class MainActivity : AppCompatActivity() {
     private val healthBridge by lazy { HealthBridge(this) }
 
     /**
+     * 系统 TTS 桥：让网页用手机自带的语音包发声（免费、离线）。
+     *
+     * 存在的理由：Android System WebView 没有 Chromium 的语音合成组件，
+     * `speechSynthesis.speak()` 在壳内是静默失败的——市场里所有自建朗读的
+     * APP（背单词、点读、听力）在壳里全是哑的，同一页面在 Chrome 里却有声。
+     * 只有原生 TextToSpeech 能真正驱动系统引擎。
+     */
+    private val systemTts by lazy { SystemTtsBridge(this) }
+
+    /**
      * 睡眠读取权限的申请结果回调。
      *
      * Health Connect 的授权走它自己的 ActivityResultContract，不是系统的
@@ -254,6 +264,20 @@ class MainActivity : AppCompatActivity() {
         stepPermissionGranted = granted
         // 刚拿到权限就挂上传感器：下一次采样就能读到值，用户不必重启 App
         if (granted) PerceptionBridge.attachStepSensor(this)
+    }
+
+    /**
+     * 麦克风权限的申请结果回调。
+     *
+     * 与活动识别/日历同一套路：权限由网页主动申请，壳只记结果，
+     * 由网页轮询 hasMicrophonePermission() 决定下一步。
+     * 不在这里直接转授给挂起的 PermissionRequest——WebView 的那次请求
+     * 早已因为缺少系统权限而超时，重新走一遍 getUserMedia 才是可靠的路。
+     */
+    private val microphonePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        // 结果由 hasMicrophonePermission() 实时查询，这里不需要额外动作
     }
 
     /** 拉取远程头像用；超时压短，头像拿不到就退回默认图标，不能拖住通知。 */
@@ -1271,6 +1295,10 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         // 登记给 ShellBus：浮窗服务/无障碍服务要把事件投回页面，需要这个引用。
         // WebView 只能在主线程访问，投递时由 ShellBus 统一 post 到主线程。
         ShellBus.webView = webView
+        // 预热系统 TTS 引擎：TextToSpeech 的 init 是异步的（首次可能要几百毫秒到数秒）。
+        // 等用户点「朗读」才初始化，第一句几乎必然丢掉——表现出来就是「点了没反应」。
+        // 这里提前热好，之后 speakText 基本都能立刻受理。
+        systemTts.warmUp()
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
@@ -1692,6 +1720,9 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             runCatching { webView.stopLoading() }
             runCatching { webView.destroy() }
         }
+        // 先停朗读再释放引擎：不 shutdown 会占着系统 TTS 服务，
+        // 下次进来 init 可能拿到一个已被系统回收的绑定。
+        runCatching { systemTts.shutdown() }
         runCatching { sharedVideoExecutor.shutdownNow() }
         super.onDestroy()
     }
@@ -1824,6 +1855,9 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                 .put("webViewPackage", webViewPackage?.packageName ?: "unknown")
                 .put("webViewVersion", webViewPackage?.versionName ?: "unknown")
                 .put("permissions", org.json.JSONObject()
+                    .put("microphone", ContextCompat.checkSelfPermission(
+                        this@MainActivity, Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED)
                     .put("notifications", if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&
                             notificationManager.areNotificationsEnabled()
@@ -2007,6 +2041,85 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         /** 是否已授予「使用情况访问」权限（屏幕使用时间的前提）。 */
         @JavascriptInterface
         fun hasUsageStatsAccess(): Boolean = deviceAction.hasUsageStatsAccess()
+
+        // ── 麦克风权限（通话「按住说话」、语音消息、语音识别的前提）────
+        // 危险权限被拒过一次之后，系统不再自动弹窗，网页调用 getUserMedia
+        // 会永远静默失败——表现就是「壳不支持录音」。此前壳里没有任何检查或
+        // 重新申请入口（诊断快照只报了通知/悬浮窗/使用情况/无障碍），用户
+        // 一旦误点拒绝就再也没法自救。这三个方法补上这条自救路径。
+
+        /** 麦克风权限是否已授予。 */
+        @JavascriptInterface
+        fun hasMicrophonePermission(): Boolean = ContextCompat.checkSelfPermission(
+            this@MainActivity,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+
+        /**
+         * 申请麦克风权限。
+         *
+         * 返回 true 表示「现在就已授权」，false 表示弹出了系统对话框（或
+         * 已被永久拒绝、只剩系统设置可走），结果要稍后由
+         * hasMicrophonePermission() 轮询确认——申请是异步的，拿不到同步结果。
+         */
+        @JavascriptInterface
+        fun requestMicrophonePermission(): Boolean {
+            if (hasMicrophonePermission()) return true
+            runCatching { microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+            return false
+        }
+
+        /** 跳到系统的本应用权限页（麦克风被永久拒绝时，只剩这条路能恢复）。 */
+        @JavascriptInterface
+        fun openAppPermissionSettings(): Boolean = runCatching {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        }.getOrDefault(false)
+
+        // ── 系统 TTS（用手机自带语音包朗读，免费 / 离线 / 不走 API 额度）────
+        // 详细边界见 SystemTtsBridge。这里只做转发：壳不替网页判断该不该读。
+
+        /**
+         * 用系统语音引擎朗读一段文本。
+         *
+         * @param text 要读的文本（超长会被截断，朗读场景本来就是短句）。
+         * @param lang BCP-47 语言标签，如 en-US / zh-CN；缺省 en-US。
+         * @param rate 语速，1.0 为原速。
+         * @return JSON 字符串 {"ok":true,"utteranceId":"..."} 或
+         *         {"ok":false,"reason":"...","message":"..."}。
+         *         ok 只表示「已交给引擎」；真正读完/出错由 window 的
+         *         `shell-tts` 事件回报（detail.type = start/end/stop/error）。
+         */
+        @JavascriptInterface
+        fun speakText(text: String, lang: String, rate: Float): String =
+            systemTts.speak(text, lang, rate).toString()
+
+        /** 立刻停止系统朗读并清空队列。 */
+        @JavascriptInterface
+        fun stopSpeaking() {
+            systemTts.stop()
+        }
+
+        /** 系统当前是否正在朗读（网页据此区分「在念」与「念完了」）。 */
+        @JavascriptInterface
+        fun isSpeakingText(): Boolean = systemTts.speakingNow()
+
+        /**
+         * 手机里真实可用的系统语音包清单（JSON 数组）。
+         *
+         * 每项含 name / locale / quality / latency / needsNetwork。
+         * 若返回空数组，说明系统没装任何 TTS 引擎或数据缺失——网页应提示
+         * 用户去系统「文字转语音输出」里装语音包，而不是假装能读。
+         */
+        @JavascriptInterface
+        fun getSystemVoices(): String = systemTts.voicesJson()
+
+        /** 系统 TTS 状态摘要（诊断面板与「发音通道」卡片用）。 */
+        @JavascriptInterface
+        fun getSystemTtsState(): String = systemTts.stateJson().toString()
 
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，

@@ -28,6 +28,12 @@
          在没装时能正确地「探测不到」而不是崩掉。Android 14+ 它已并入系统。 -->
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <!-- 系统 TTS 引擎（见 SystemTtsBridge）：Android 11+ 的包可见性限制下，
+             不声明这个 intent 就「看不见」任何语音引擎，TextToSpeech 初始化
+             可能拿不到引擎或 voices 列表为空——表现同样是「点了没声音」。 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
         <!-- 闹钟与倒计时：Android 11+ 有包可见性限制，不在 queries 里声明这两个
              意图，就「看不到」系统时钟 App，startActivity 会抛
              ActivityNotFoundException，被误报成「这台设备没有可用的时钟应用」。 -->
