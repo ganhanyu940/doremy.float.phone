@@ -240,7 +240,7 @@ html, body { min-height: 100%; }
         for (var i = 0; i < waiters.length; i++) { try { waiters[i](); } catch (e) {} }
       }
       function loadVoices(){
-        request('voice.systemVoices', {}).then(function(res){
+        request('voice.systemVoices', { via: 'shim' }).then(function(res){
           var arr = (res && res.voices) || [];
           hostVoices = arr.map(function(v){
             return {
@@ -1637,7 +1637,14 @@ export function CustomAppRunner({
     // 与上面 voice.play 的代播不同：这里不产生音频数据，直接驱动系统 TTS 引擎。
     // 安卓壳内走原生 TextToSpeech；浏览器里退回宿主页自己的 Web Speech。
     if (action === "voice.systemSpeak") {
-      requirePermission("voice.system");
+      // via === "shim" 来自下面那段 speechSynthesis 兼容垫片：它服务的是
+      // 「本来就在用 Web Speech 朗读」的存量 APP（HelloWord 等）。这些 APP
+      // 的 manifest 里不可能声明 voice.system（那时还没这个权限），而用户
+      // 也没法去改别人发布的包。垫片做的事 = 把浏览器本来就白送的朗读能力
+      // 接到系统引擎上，不读用户数据、不联网、不上传，因此不设权限门禁；
+      // 显式调用 AiPhone.voice.systemSpeak 的新 APP 才需要 voice.system。
+      const viaShim = String(record.via ?? "") === "shim";
+      if (!viaShim) requirePermission("voice.system");
       const text = String(record.text ?? "");
       if (!text.trim()) throw new Error("voice.systemSpeak 需要 text。");
       const lang = String(record.lang ?? "en-US").trim() || "en-US";
@@ -1657,8 +1664,10 @@ export function CustomAppRunner({
       return { ok: true };
     }
     if (action === "voice.systemVoices") {
-      // 列表本身不含用户数据，但仍走同一权限，避免未声明权限的 APP 探测设备信息。
-      requirePermission("voice.system");
+      // 垫片启动时要拉一次清单来填充 getVoices()（老 APP 全靠这个才能看到
+      // 音色列表）。同理不设门禁，理由见 voice.systemSpeak。
+      const viaShim = String(record.via ?? "") === "shim";
+      if (!viaShim) requirePermission("voice.system");
       return { voices: listSystemVoices(), state: getSystemTtsState() };
     }
     if (action === "voice.systemState") {
