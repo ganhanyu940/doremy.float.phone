@@ -463,7 +463,15 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
         }
     };
 
-    const canSend = inputMode === "text" ? !!manualText.trim() : state === "done" && !!finalText.trim();
+    // 关键修正：录音与识别解耦。
+    // 原逻辑要求 state==="done" && finalText 非空才能发送，而 finalText 只能由识别
+    // 成功产出 —— 一旦识别不可用（壳内没有识别引擎 / 云端接口 404），用户明明录到了
+    // 声音也发不出去，等于语音消息功能整体废掉。
+    // 现在：只要录到了音频（audioDataUrl 非空）就可以直接发送（角色侧按 [语音] 处理）；
+    // 识别成功时额外拿到文字，一并带给调用方做更好的提示。文字输入模式不受影响。
+    const canSend = inputMode === "text"
+        ? !!manualText.trim()
+        : !!audioDataUrl || (state === "done" && !!finalText.trim());
 
     return (
         <div className="modal-overlay" onClick={onClose}>
@@ -524,8 +532,11 @@ export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordMo
                     <button
                         onClick={() => {
                             if (!canSend) return;
-                            if (inputMode === "text") onSend(manualText.trim());
-                            else onSend(finalText.trim(), audioDataUrl || undefined);
+                            if (inputMode === "text") { onSend(manualText.trim()); return; }
+                            // 识别成功就带上文字，失败也要把音频发出去——
+                            // 语音消息的价值在"声音本身"，不该被识别能力绑架。
+                            const text = finalText.trim() || manualText.trim();
+                            onSend(text, audioDataUrl || undefined);
                         }}
                         disabled={!canSend}
                         className="ui-btn ui-btn-success flex-1"
