@@ -1424,7 +1424,10 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             ): Boolean {
                 filePathCallback?.onReceiveValue(emptyArray())
                 filePathCallback = callback
-                pendingCameraUri = null
+                // 字段已改名为 pendingCapture（见 PendingCapture 数据类），这里同步。
+                // 残留旧名 pendingCameraUri 会让 compileDebugKotlin 直接失败：
+                // Unresolved reference: pendingCameraUri。
+                pendingCapture = null
                 return runCatching {
                     // 只认「网页明确要求拍照」这一种情况：isCaptureEnabled 是 WebView
                     // 根据 input 上的 capture 属性给出的信号。
@@ -1482,7 +1485,8 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
                     }
                     fileChooserLauncher.launch(intent); true
                 }.getOrElse {
-                    pendingCameraUri = null
+                    // 同上：这里是第二处 pendingCameraUri 残留，也是 CI 报错指向的位置。
+                    pendingCapture = null
                     filePathCallback = null
                     callback.onReceiveValue(emptyArray())
                     false
