@@ -327,7 +327,17 @@ interface VoiceRecordModalProps {
 }
 
 export function VoiceRecordModal({ characterId, onSend, onClose }: VoiceRecordModalProps) {
-    const androidTextInputOnlyRef = useRef(isAndroidBrowser());
+    // 此处原先用 isAndroidBrowser() 一刀切：只要 UA 带 Android 就禁止录音。
+    // 后果是安卓上（无论浏览器还是壳内）语音消息弹窗只有文字输入，
+    // 而且报的是「无法开启麦克风，请检查权限」——用户把权限全开也没用，
+    // 因为 getUserMedia 压根没被调用。实际录音能力取决于
+    // navigator.mediaDevices + MediaRecorder 是否可用，不该拿平台硬判。
+    const androidTextInputOnlyRef = useRef(
+        typeof navigator === "undefined"
+        || !navigator.mediaDevices?.getUserMedia
+        || typeof MediaRecorder === "undefined"
+        || !MediaRecorder.isTypeSupported?.("audio/webm"),
+    );
     const androidTextInputOnly = androidTextInputOnlyRef.current;
     const [state, setState] = useState<"idle" | "recording" | "processing" | "done">("idle");
     const [inputMode, setInputMode] = useState<"voice" | "text">(() => androidTextInputOnly ? "text" : "voice");
