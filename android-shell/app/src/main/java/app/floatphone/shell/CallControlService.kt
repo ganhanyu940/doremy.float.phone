@@ -41,6 +41,14 @@ class CallControlService : AccessibilityService() {
         @Volatile
         var connected: Boolean = false
             private set
+
+        /**
+         * 当前服务实例。MainActivity 的桥要通过它访问 LockGuard
+         * （锁机逻辑依赖无障碍服务持有的前台应用信息）。
+         */
+        @Volatile
+        var instance: CallControlService? = null
+            private set
         private const val PREFS = "native_background_perception"
         private const val QUEUE_KEY = "pending_events"
         private const val CURRENT_PACKAGE_KEY = "current_package"
@@ -52,6 +60,15 @@ class CallControlService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val pendingLock = Any()
     @Volatile private var delivering = false
+
+    /**
+     * 锁机守护（白名单硬锁）。无障碍服务是唯一能"看见前台应用并盖全屏浮层"的
+     * 原生成分，因此锁机逻辑挂在这里，由 LockGuard 负责具体实现。
+     */
+    private val lockGuard by lazy { LockGuard(this) }
+
+    /** 供 MainActivity 的桥调用：把锁机配置/操作转给 LockGuard。 */
+    fun currentLockGuard(): LockGuard = lockGuard
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -71,6 +88,7 @@ class CallControlService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         connected = true
+        instance = this
         ScreenshotBridge.attach(this)
         ShellBus.dispatchOverlayEvent("accessibility", JSONObject().put("connected", true))
 
@@ -97,7 +115,9 @@ class CallControlService : AccessibilityService() {
         updateForegroundPackage(pkg)
         // 原有网页感知与其他壳功能继续收到前台应用变化事件。
         ShellBus.dispatchOverlayEvent("foregroundApp", JSONObject().put("package", pkg))
-
+        // 锁机：前台应用一变就判定要不要盖遮罩。放在事件入口而不是定时轮询，
+        // 是为了让"点开抖音的一瞬间就被挡住"，而不是过几秒才拦。
+        runCatching { lockGuard.onForegroundPackageChanged(pkg) }
     }
 
     private fun updateForegroundPackage(pkg: String) {
@@ -348,8 +368,12 @@ class CallControlService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        if (instance === this) instance = null
         handler.removeCallbacks(dwellTicker)
         ScreenshotBridge.attach(null)
+        // 服务被系统回收/用户关闭无障碍时，遮罩必须一并收掉：
+        // 否则会留下一层再也点不掉的死浮层。
+        runCatching { lockGuard.shutdown() }
         super.onDestroy()
     }
 }

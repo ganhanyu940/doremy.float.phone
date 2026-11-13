@@ -2166,6 +2166,54 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             systemStt.cancel()
         }
 
+        // ── 锁机（白名单硬锁，需无障碍服务已开启）────
+        // 实现见 LockGuard。拦截靠无障碍服务看前台包名 + 盖全屏遮罩，
+        // 因此这些方法在无障碍未开启时会明确返回失败，而不是假装锁上了。
+
+        /** 锁机是否可用（= 无障碍服务是否连着）。 */
+        @JavascriptInterface
+        fun isLockGuardAvailable(): Boolean = CallControlService.connected
+
+        /** 下发配置：{enabled, whitelist:[包名], reason, source}。 */
+        @JavascriptInterface
+        fun configureLockGuard(json: String): Boolean =
+            runCatching { CallControlService.instance?.currentLockGuard()?.configure(json) ?: false }
+                .getOrDefault(false)
+
+        /**
+         * 立刻锁定到 untilMs（毫秒时间戳，上限 8 小时）。
+         * @return JSON {"ok":true,"until":...,"minutes":...} 或 {"ok":false,"message":"..."}
+         */
+        @JavascriptInterface
+        fun lockPhone(untilMs: Long, reason: String, source: String): String {
+            val guard = CallControlService.instance?.currentLockGuard()
+                ?: return org.json.JSONObject()
+                    .put("ok", false)
+                    .put("reason", "accessibility_off")
+                    .put("message", "锁机需要先开启无障碍服务")
+                    .toString()
+            return guard.lock(untilMs, reason, source).toString()
+        }
+
+        /** 立刻解锁。 */
+        @JavascriptInterface
+        fun unlockPhone(source: String): String {
+            val guard = CallControlService.instance?.currentLockGuard()
+                ?: return org.json.JSONObject().put("ok", false).put("message", "无障碍服务未运行").toString()
+            return guard.unlock(source).toString()
+        }
+
+        /** 锁机状态：{enabled, locked, lockedUntil, remainingMs, reason, source, whitelist}。 */
+        @JavascriptInterface
+        fun getLockGuardStatus(): String {
+            val guard = CallControlService.instance?.currentLockGuard()
+                ?: return org.json.JSONObject()
+                    .put("available", false)
+                    .put("locked", false)
+                    .toString()
+            return guard.statusJson().put("available", true).toString()
+        }
+
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，
         // 但不接受「往我日历里写东西」。两个权限独立授予，所以状态也独立。

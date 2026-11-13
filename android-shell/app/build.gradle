@@ -46,8 +46,10 @@ android {
         //         versionCode 必须递增：同号或回退会被 Android 拒绝覆盖安装（报「应用未安装」）。
         // 1.0.31：系统语音识别桥（SpeechRecognizer，免费把说话转文字）。WebView 里
         //         webkitSpeechRecognition 无后端，通话语音输入一直是「无法访问麦克风」。
-        versionCode 30
-        versionName "1.0.31"
+        // 1.0.32：锁机（白名单硬锁）。无障碍服务按前台包名拦截非白名单应用并盖
+        //         全屏倒计时遮罩；电话与系统设置永远放行（逃生门）；单次最长 8 小时。
+        versionCode 31
+        versionName "1.0.32"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 
