@@ -25,14 +25,21 @@ import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { executeLifeToolCall } from "./life/life-tools";
 import { appendLifeTimelineEntry, loadVirtualLifeState, saveVirtualLifeState } from "./life/life-storage";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, PHONE_CHECK_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, PHONE_CHECK_CAPABILITY_ID, STUDY_CONTRACT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { describePhoneLockStatus, runCharacterLock, runCharacterUnlock } from "./device-lock";
 import {
-    classifyTimeline,
+    buildPhoneCheckReport,
     describeTimelineForCharacter,
     loadPhoneCheckConfig,
-    summarizeTimeline,
 } from "./phone-check";
+import {
+    describeOpenContracts,
+    loadContractConfig,
+    loadContracts,
+    makeContractId,
+    saveContracts,
+    type StudyContract,
+} from "./study-contract";
 import { createPhotoWallId, loadPhotoWallState, savePhotoWallState, type PhotoWallDoodle, type PhotoWallCreationRecord, type PhotoWallPhoto } from "./photo-wall-storage";
 import { generateImageFromConfiguredApi } from "./image-generation-service";
 import {
@@ -891,6 +898,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     // 同样必须排在现实桥之前：用户完全可能把自己的快捷动作命名成「锁住手机」。
     if (call.name === "锁住手机") return executeDeviceLockTool(call, context);
     if (call.name === "查看手机时间线") return executePhoneCheckTool(call, context);
+    if (call.name === "学习约定") return executeStudyContractTool(call, context);
     if (isRealityBridgeToolName(call.name)) return executeRealityBridgeTool(call, context);
     if (call.name === "稍后主动联系" || call.name === "设置定时醒来") return executeTimedWakeTool(call, context);
 
@@ -1234,6 +1242,153 @@ async function executeSystemCalendarWriteTool(call: ToolCall): Promise<ToolResul
 }
 
 /**
+ * 学习约定：建立 / 查看 / 取消。
+ *
+ * 判定与处置不在注册时做，而是到点后由 settleDueContracts() 统一处理
+ * （那边才拿得到真实使用数据）。这里只负责把约定记下来。
+ */
+async function executeStudyContractTool(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
+    const capability = getInternalCapability(STUDY_CONTRACT_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "「学习约定」能力未启用（设置 → 角色管我）",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "学习约定能力未启用",
+        };
+    }
+    const config = loadContractConfig();
+    if (!config.allowContracts) {
+        return {
+            name: call.name,
+            success: false,
+            error: "TA 还没有允许建立学习约定（设置 → 角色管我 → 允许建立学习约定）",
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "TA 没有开放学习约定",
+        };
+    }
+
+    const action = cleanToolString(call.args?.action, 20).toLowerCase();
+
+    if (action === "list" || action === "查看") {
+        return {
+            name: call.name,
+            success: true,
+            data: describeOpenContracts(),
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "看了看现在的约定",
+        };
+    }
+
+    if (action === "cancel" || action === "取消") {
+        const id = cleanToolString(call.args?.contractId, 80);
+        if (!id) return { name: call.name, success: false, error: "需要 contractId（先用 list 拿到）" };
+        const all = loadContracts();
+        const target = all.find(item => item.id === id);
+        if (!target) return { name: call.name, success: false, error: `找不到这条约定：${id}` };
+        saveContracts(all.map(item => item.id === id
+            ? { ...item, status: "cancelled" as const, verdict: "已取消", updatedAt: Date.now() }
+            : item));
+        return {
+            name: call.name,
+            success: true,
+            data: `已取消约定「${target.title}」。`,
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: `取消了约定：${target.title}`,
+        };
+    }
+
+    if (action !== "create" && action !== "建立") {
+        return { name: call.name, success: false, error: "action 只能是 create / list / cancel" };
+    }
+
+    const kind = cleanToolString(call.args?.kind, 20).toLowerCase() === "attime" ? "atTime" : "countdown";
+    const title = cleanToolString(call.args?.title, 80);
+    if (!title) {
+        return { name: call.name, success: false, error: "需要 title：说清约定做什么，比如「背 50 个单词」" };
+    }
+
+    const now = Date.now();
+    let startAt = now;
+    let dueAt = 0;
+    let requiredMinutes: number | undefined;
+
+    if (kind === "countdown") {
+        const minutes = Number(call.args?.minutes);
+        if (!Number.isFinite(minutes) || minutes <= 0) {
+            return { name: call.name, success: false, error: "倒计时式约定需要 minutes（要学多少分钟）" };
+        }
+        // 夹到 1-480：太短没意义，太长会跨过一整天，判定窗口全是噪声
+        const bounded = Math.max(1, Math.min(480, Math.round(minutes)));
+        requiredMinutes = bounded;
+        dueAt = now + bounded * 60_000;
+    } else {
+        const raw = cleanToolString(call.args?.startAt, 10);
+        const matched = /^(\d{1,2}):(\d{2})$/.exec(raw);
+        if (!matched) {
+            return { name: call.name, success: false, error: "时刻式约定需要 startAt，格式 HH:MM（24 小时制）" };
+        }
+        const hour = Number(matched[1]);
+        const minute = Number(matched[2]);
+        if (hour > 23 || minute > 59) {
+            return { name: call.name, success: false, error: "startAt 的时间不合法（小时 0-23，分钟 0-59）" };
+        }
+        const start = new Date();
+        start.setHours(hour, minute, 0, 0);
+        // 已经过了这个点就顺延到明天：角色说「八点开始学」而此刻是九点，
+        // 指的是明天八点，不是「已经晚了」。判成今天会立刻判违约。
+        if (start.getTime() <= now) start.setDate(start.getDate() + 1);
+        startAt = start.getTime();
+        const minutesArg = Number(call.args?.minutes);
+        const bounded = Number.isFinite(minutesArg) && minutesArg > 0
+            ? Math.max(1, Math.min(480, Math.round(minutesArg)))
+            : 0;
+        requiredMinutes = bounded || undefined;
+        // 判定窗口：从 startAt 到「startAt + 要求时长」，没填时长就给 90 分钟
+        // 的观察窗——够判断「有没有真的坐下来学」，也不至于把半夜的娱乐算进来。
+        dueAt = startAt + (bounded || 90) * 60_000;
+    }
+
+    const characterName = context?.characterId ? getCurrentCharacter(context.characterId).name : "";
+    const contract: StudyContract = {
+        id: makeContractId(),
+        kind,
+        title,
+        createdBy: characterName || "角色",
+        characterId: context?.characterId,
+        sessionId: context?.sessionId,
+        startAt,
+        dueAt,
+        requiredMinutes,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+    };
+    saveContracts([...loadContracts(), contract]);
+
+    const clock = (ms: number) => {
+        const date = new Date(ms);
+        return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+    };
+    const when = kind === "countdown"
+        ? `${requiredMinutes} 分钟后（约 ${clock(dueAt)}）`
+        : `${clock(startAt)} 开始${requiredMinutes ? `，至少 ${requiredMinutes} 分钟` : ""}`;
+    return {
+        name: call.name,
+        success: true,
+        data: `已记下约定「${title}」：${when}。到点会用真实使用记录核对，不是听你说。`,
+        continueConversation: true,
+        persistToHistory: false,
+        userNotice: `约定已记下：${title}`,
+    };
+}
+
+/**
  * 查手机时间线：让角色看清用户今天几点在用什么应用、是不是真的在学。
  *
  * 三道门控（任一不过就明确说明，绝不编造）：
@@ -1268,7 +1423,8 @@ async function executePhoneCheckTool(call: ToolCall, context?: ToolExecutionCont
         };
     }
 
-    const segments = classifyTimeline(config);
+    const report = buildPhoneCheckReport(config);
+    const segments = report.segments;
     if (!segments.length) {
         // 三种「空」的原因对用户意味着完全不同的处置，不能混成一句：
         // 老壳没这个接口 / 没授权 / 今天真没怎么用。
@@ -1293,7 +1449,7 @@ async function executePhoneCheckTool(call: ToolCall, context?: ToolExecutionCont
         };
     }
 
-    const summary = summarizeTimeline(segments);
+    const summary = report;
     const focus = cleanToolString(call.args?.focus, 20).toLowerCase();
     const limit = numberArg(call.args?.limit, 1, 120, 60);
 
@@ -1306,6 +1462,11 @@ async function executePhoneCheckTool(call: ToolCall, context?: ToolExecutionCont
             const at = new Date(summary.longestPlayStreak.startAt);
             const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
             parts.push(`最长一段连续玩：${clock} 起，「${summary.longestPlayStreak.label}」约 ${summary.longestPlayStreak.minutes} 分钟。`);
+        }
+        if (summary.innerApps.length) {
+            const rows = summary.innerApps.slice(0, 8)
+                .map(item => `${item.app}${item.study ? "（学习）" : ""} ${item.minutes} 分钟`);
+            parts.push(`小手机内部各应用合计：${rows.join("、")}。`);
         }
         return {
             name: call.name,

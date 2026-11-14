@@ -159,6 +159,21 @@ export function classifyTimeline(config: PhoneCheckConfig, floatPackage = "app.f
     });
 }
 
+/**
+ * 小手机内部单个应用的当日累计。
+ *
+ * 为什么要单独算：系统时间线只能给到「float 在前台」这一层，
+ * 想知道「考点工坊用了 45 分钟、噼里啪啦用了 42 分钟」必须靠网页自己记的
+ * 内部应用切换点来算。用户确实要这个——只看逐段明细看不出排行，
+ * 而占比恰恰是「到底把时间花在哪」最直接的答案。
+ */
+export type InnerAppUsage = {
+  app: string;
+  minutes: number;
+  /** 是否在学习名单里 */
+  study: boolean;
+};
+
 export type PhoneCheckSummary = {
   /** 学习总分钟数（含 float 内部学习应用） */
   studyMinutes: number;
@@ -169,7 +184,58 @@ export type PhoneCheckSummary = {
   switchCount: number;
   /** 时间线本身（用户选了「精确版」，角色也可以拿到） */
   segments: ClassifiedSegment[];
+  /** 小手机内部各应用的累计时长（按时长降序） */
+  innerApps: InnerAppUsage[];
 };
+
+/**
+ * 从小手机内部的切换点算出「每个应用待了多久」。
+ *
+ * 算法：把内部切换点按时间排序，每段时长 = 下一次切换的时刻 − 这一次的时刻。
+ * 最后一段截止到「此刻」或「float 离开前台」——两者取早，否则用户已经
+ * 切出去半小时了，还会继续给最后那个应用记账。
+ *
+ * 只在 float 处于前台的区间内记账：切出去看微信的那段时间不该算到
+ * 小手机里的某个应用头上，否则排行会虚高。
+ */
+export function summarizeInnerApps(
+  segments: ClassifiedSegment[],
+  spans: InnerAppSpan[],
+  studyInnerApps: string[],
+  floatPackage = "app.floatphone.shell",
+): InnerAppUsage[] {
+  const floatSpans = segments.filter(segment => segment.package === floatPackage);
+  if (!floatSpans.length || !spans.length) return [];
+
+  const studySet = new Set(studyInnerApps);
+  const totals = new Map<string, number>();
+  const sorted = [...spans].sort((a, b) => a.at - b.at);
+
+  for (let index = 0; index < sorted.length; index += 1) {
+    const span = sorted[index];
+    const next = sorted[index + 1];
+    let end = next ? next.at : Date.now();
+
+    // 截止到「包含这个时刻的 float 段」的结束——既处理「已经切出小手机」，
+    // 也处理「最后一段本来就还没结束」。
+    const host = floatSpans.find(segment => span.at >= segment.startAt && span.at <= segment.endAt);
+    if (host && host.endAt < end) end = host.endAt;
+    if (!host) continue;
+
+    const seconds = Math.max(0, (end - span.at) / 1000);
+    // 少于 3 秒的切换是误触或快速点进点出，不记账
+    if (seconds < 3) continue;
+    totals.set(span.app, (totals.get(span.app) ?? 0) + seconds);
+  }
+
+  return Array.from(totals.entries())
+    .map(([app, seconds]) => ({
+      app,
+      minutes: Math.max(1, Math.round(seconds / 60)),
+      study: studySet.has(app),
+    }))
+    .sort((a, b) => b.minutes - a.minutes);
+}
 
 function isStudy(kind: ClassifiedSegment["kind"]): boolean {
   return kind === "study" || kind === "float";
@@ -223,7 +289,30 @@ export function summarizeTimeline(segments: ClassifiedSegment[]): PhoneCheckSumm
     longestPlayStreak: longest,
     switchCount: segments.length,
     segments,
+    // 内部应用的累计总量另算（见 summarizeInnerApps）：这里只放时间线，
+    // 由调用方带上 config 再补，避免这个函数被迫依赖配置。
+    innerApps: [],
   };
+}
+
+/**
+ * 给汇总补上「小手机内部各应用用了多久」。
+ *
+ * 单独一步而不是塞进 summarizeTimeline：算它需要外面的配置（学习名单）
+ * 和原始切换点，让 summarizeTimeline 保持「只吃时间线」的纯函数更好测。
+ */
+export function withInnerApps(
+  summary: PhoneCheckSummary,
+  config: PhoneCheckConfig,
+  spans: InnerAppSpan[] = loadInnerAppSpans(),
+): PhoneCheckSummary {
+  return { ...summary, innerApps: summarizeInnerApps(summary.segments, spans, config.studyInnerApps) };
+}
+
+/** 一步到位：读时间线 + 归类 + 汇总（含内部应用排行）。面板与角色都走这个。 */
+export function buildPhoneCheckReport(config: PhoneCheckConfig): PhoneCheckSummary {
+  const segments = classifyTimeline(config);
+  return withInnerApps(summarizeTimeline(segments), config);
 }
 
 /**
@@ -252,6 +341,12 @@ export function describeTimelineForCharacter(summary: PhoneCheckSummary): string
   const head = [
     `今天累计：学习约 ${summary.studyMinutes} 分钟，玩手机约 ${summary.playMinutes} 分钟，切换 ${summary.switchCount} 次。`,
   ];
+  // 内部应用排行：这是「到底把时间花在小手机的哪个应用上」最直接的答案。
+  // 只列前 8 个，免得把重要的时间线挤没了。
+  if (summary.innerApps.length) {
+    const rows = summary.innerApps.slice(0, 8).map(item => `${item.app}${item.study ? "（学习）" : ""} ${item.minutes} 分钟`);
+    head.push(`小手机内部各应用合计：${rows.join("、")}。`);
+  }
   if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
     head.push(`最长一段连续玩：${clock(summary.longestPlayStreak.startAt)} 起，「${summary.longestPlayStreak.label}」约 ${summary.longestPlayStreak.minutes} 分钟。`);
   }
@@ -271,6 +366,10 @@ export function describeTimelineForUser(summary: PhoneCheckSummary): string {
   const parts = [`学习 ${fmt(summary.studyMinutes)}`, `玩 ${fmt(summary.playMinutes)}`];
   if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
     parts.push(`最长连续玩 ${summary.longestPlayStreak.minutes} 分钟`);
+  }
+  if (summary.innerApps.length) {
+    const top = summary.innerApps[0];
+    parts.push(`小手机里最久是「${top.app}」${top.minutes} 分钟`);
   }
   return parts.join(" · ");
 }

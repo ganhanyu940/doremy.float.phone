@@ -17,13 +17,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Toggle } from "@/components/ui/form";
 import {
-  classifyTimeline,
+  buildPhoneCheckReport,
   describeTimelineForUser,
   loadPhoneCheckConfig,
   savePhoneCheckConfig,
-  summarizeTimeline,
   type ClassifiedSegment,
   type PhoneCheckConfig,
+  type PhoneCheckSummary,
 } from "@/lib/phone-check";
 import { loadAppUsageTimeline, supportsUsageTimeline } from "@/lib/perception/bridge";
 import { listLaunchableApps, type LaunchableApp } from "@/lib/phone-lock";
@@ -32,6 +32,12 @@ import { listLaunchableApps, type LaunchableApp } from "@/lib/phone-lock";
 import { openSystemSettings } from "@/lib/device-action";
 import { isShellEnvironment as isShell } from "@/lib/shell-call-overlay";
 import { loadInstalledCustomApps } from "@/lib/custom-app-storage";
+import {
+  loadContractConfig,
+  loadContracts,
+  saveContractConfig,
+  saveContracts,
+} from "@/lib/study-contract";
 
 /** float 内部可能算学习的应用候选（从已装应用里挑，避免写死）。 */
 type InnerCandidate = { name: string };
@@ -40,6 +46,7 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
   const [config, setConfig] = useState<PhoneCheckConfig>(() => loadPhoneCheckConfig());
   const [apps, setApps] = useState<LaunchableApp[]>([]);
   const [innerCandidates, setInnerCandidates] = useState<InnerCandidate[]>([]);
+  const [report, setReport] = useState<PhoneCheckSummary | null>(null);
   const [segments, setSegments] = useState<ClassifiedSegment[]>([]);
   const [query, setQuery] = useState("");
 
@@ -47,7 +54,9 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
     const next = loadPhoneCheckConfig();
     setConfig(next);
     // 时间线每次现读：系统那边在持续变化，缓存一份只会让用户看到过期结论
-    setSegments(classifyTimeline(next));
+    const built = buildPhoneCheckReport(next);
+    setReport(built);
+    setSegments(built.segments);
   }, []);
 
   useEffect(() => {
@@ -88,13 +97,18 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
   const inShell = useMemo(() => isShell(), []);
   const timelineSupported = useMemo(() => supportsUsageTimeline(), []);
   const hasData = segments.length > 0;
-  const summary = useMemo(() => summarizeTimeline(segments), [segments]);
+  const summary = useMemo(
+    () => report ?? { studyMinutes: 0, playMinutes: 0, longestPlayStreak: null, switchCount: 0, segments: [], innerApps: [] },
+    [report],
+  );
 
   const update = useCallback((patch: Partial<PhoneCheckConfig>) => {
     const next = { ...loadPhoneCheckConfig(), ...patch };
     savePhoneCheckConfig(next);
     setConfig(next);
-    setSegments(classifyTimeline(next));
+    const built = buildPhoneCheckReport(next);
+    setReport(built);
+    setSegments(built.segments);
   }, []);
 
   const toggleStudyPackage = (pkg: string) => {
@@ -177,6 +191,9 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
       </div>
 
       <div className="page-menu" style={{ paddingBottom: 40, gap: 16 }}>
+        {/* 约定：和查手机是一套（约定靠时间线验收） */}
+        <StudyContractSettings onNotice={onNotice} />
+
         {/* 授权 */}
         <div>
           <div className="settings-menu-section-title">授权</div>
@@ -220,6 +237,31 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
               </div>
             </div>
           </div>
+          {summary.innerApps.length > 0 && (
+            <div className="menu-group" style={{ marginTop: 10 }}>
+              <div className="menu-item" style={{ cursor: "default" }}>
+                <div className="menu-label-group">
+                  <span className="menu-label">小手机内部各应用用了多久</span>
+                  <span className="menu-desc">
+                    系统只看得到「float 在前台」，这层是网页自己记的切换点算出来的。
+                  </span>
+                </div>
+              </div>
+              {summary.innerApps.map(item => (
+                <div className="menu-item" style={{ cursor: "default" }} key={item.app}>
+                  <div className="menu-label-group">
+                    <span className="menu-label">{item.app}</span>
+                    <span
+                      className="menu-desc"
+                      style={{ color: item.study ? "var(--c-success, #2b8a5f)" : "var(--c-danger, #b4452f)" }}
+                    >
+                      {item.study ? "学习" : "不算学习"} · {item.minutes} 分钟
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {hasData && (
             <div className="menu-group" style={{ marginTop: 10, maxHeight: 280, overflowY: "auto" }}>
               {segments.slice(-40).reverse().map((segment, index) => {
@@ -327,5 +369,168 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 学习约定面板。
+ *
+ * 放在「查手机」同一个设置子页里（两件事是一套：约定靠时间线验收，
+ * 用户看约定时往往也想知道今天的实况）。
+ *
+ * 用户随时可以取消——这是刻意的：约定是两个人的事，不是单方面的枷锁。
+ * 取消过几次角色还尊重他，这个功能才用得下去。
+ */
+export function StudyContractSettings({ onNotice }: { onNotice?: (msg: string) => void }) {
+  const [config, setConfig] = useState(() => loadContractConfig());
+  const [contracts, setContracts] = useState(() => loadContracts());
+
+  const refresh = useCallback(() => {
+    setConfig(loadContractConfig());
+    setContracts(loadContracts());
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const onChange = () => refresh();
+    window.addEventListener("study-contract-config-changed", onChange);
+    window.addEventListener("study-contracts-changed", onChange);
+    return () => {
+      window.removeEventListener("study-contract-config-changed", onChange);
+      window.removeEventListener("study-contracts-changed", onChange);
+    };
+  }, [refresh]);
+
+  const update = useCallback((patch: Partial<typeof config>) => {
+    const next = { ...loadContractConfig(), ...patch };
+    saveContractConfig(next);
+    setConfig(next);
+  }, []);
+
+  const clock = (ms: number) => {
+    const date = new Date(ms);
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  };
+
+  const open = contracts.filter(item => item.status === "pending" || item.status === "active");
+  const history = contracts.filter(item => item.status === "done" || item.status === "failed").slice(0, 8);
+
+  return (
+    <>
+      <div>
+        <div className="settings-menu-section-title">学习约定</div>
+        <div className="menu-group" style={{ marginTop: 10 }}>
+          <div className="menu-item" style={{ cursor: "default" }}>
+            <div className="menu-label-group">
+              <span className="menu-label">允许角色和我约定学习</span>
+              <span className="menu-desc">
+                默认关闭。打开后角色才能记下「学多久」「几点开始」，到点用你的真实
+                使用记录判断做到没有。它自己不能单方面给你布置任务——说明里明确要求
+                先得到你的同意。
+              </span>
+            </div>
+            <Toggle
+              checked={config.allowContracts}
+              onChange={(v: boolean) => {
+                update({ allowContracts: v });
+                onNotice?.(v ? "已开放。它现在可以和你约定了" : "已关闭，角色不能再建约定");
+              }}
+            />
+          </div>
+          <div className="menu-item" style={{ cursor: "default" }}>
+            <div className="menu-label-group">
+              <span className="menu-label">没做到时锁机</span>
+              <span className="menu-desc">
+                关掉就只提醒不锁。打开时也只有差到一定程度才锁——差一点点只提醒。
+              </span>
+            </div>
+            <Toggle
+              checked={config.lockOnFail}
+              onChange={(v: boolean) => update({ lockOnFail: v })}
+            />
+          </div>
+          <div className="menu-item" style={{ cursor: "default" }}>
+            <div className="menu-label-group">
+              <span className="menu-label">差到什么程度才锁</span>
+              <span className="menu-desc">
+                完成度低于 {config.lockThresholdPercent}% 才锁。数越大越宽松。
+                目标 45 分钟学了 40 分钟（88%）默认不锁——那种也叫没做到的话，
+                这套东西就不讲理了。
+              </span>
+            </div>
+          </div>
+          <div className="menu-item" style={{ cursor: "default", flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <input
+              type="range"
+              min={10}
+              max={100}
+              step={10}
+              value={config.lockThresholdPercent}
+              onChange={event => update({ lockThresholdPercent: Number(event.target.value) })}
+              style={{ width: "100%" }}
+            />
+            <div className="per-note" style={{ padding: 0 }}>
+              单次最长锁 {config.maxLockMinutes} 分钟（按差距算，不搞加倍惩罚）
+            </div>
+          </div>
+        </div>
+        <div className="per-note" style={{ padding: "0 var(--ui-padding, 16px)" }}>
+          还要单独开能力：工具箱 → 内置能力 → 「学习约定」。
+          判定依赖「查手机」的时间线，所以那两项也得开。
+        </div>
+      </div>
+
+      {open.length > 0 && (
+        <div>
+          <div className="settings-menu-section-title">正在进行的约定</div>
+          <div className="menu-group" style={{ marginTop: 10 }}>
+            {open.map(item => (
+              <div className="menu-item" key={item.id} style={{ cursor: "default" }}>
+                <div className="menu-label-group">
+                  <span className="menu-label">{item.title}</span>
+                  <span className="menu-desc">
+                    {item.kind === "countdown"
+                      ? `${Math.round(item.requiredMinutes ?? 0)} 分钟 · 约 ${clock(item.dueAt)} 结束`
+                      : `${clock(item.startAt)} 开始${item.requiredMinutes ? ` · 至少 ${item.requiredMinutes} 分钟` : ""}`}
+                    　· {item.createdBy} 建的
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-outline"
+                  onClick={() => {
+                    saveContracts(loadContracts().map(entry => entry.id === item.id
+                      ? { ...entry, status: "cancelled" as const, verdict: "已取消", updatedAt: Date.now() }
+                      : entry));
+                    refresh();
+                    onNotice?.(`已取消「${item.title}」`);
+                  }}
+                >
+                  取消
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div>
+          <div className="settings-menu-section-title">最近的验收结果</div>
+          <div className="menu-group" style={{ marginTop: 10 }}>
+            {history.map(item => (
+              <div className="menu-item" key={item.id} style={{ cursor: "default" }}>
+                <div className="menu-label-group">
+                  <span className="menu-label">
+                    {item.status === "done" ? "✅" : "❌"} {item.title}
+                  </span>
+                  <span className="menu-desc">{item.verdict || "已判定"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

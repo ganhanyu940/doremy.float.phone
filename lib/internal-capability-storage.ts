@@ -27,6 +27,7 @@ export const LIFE_FOLLOW_CAPABILITY_ID = "life_follow";
 export const LIFE_SCHEDULE_CAPABILITY_ID = "life_schedule";
 export const DEVICE_LOCK_CAPABILITY_ID = "device_lock";
 export const PHONE_CHECK_CAPABILITY_ID = "phone_check";
+export const STUDY_CONTRACT_CAPABILITY_ID = "study_contract";
 
 /**
  * 内置工具的保留名：用户给现实桥的快捷动作/数据项起名时必须避开。
@@ -55,6 +56,7 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "在照片墙涂鸦",
     "锁住手机",
     "查看手机时间线",
+    "学习约定",
 ];
 
 export type InternalToolDefinition = {
@@ -1512,6 +1514,17 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         createdAt: 0,
         updatedAt: 0,
     },
+    {
+        // 默认关。它会用真实使用数据判定你「做到了没」，
+        // 没做到时还可能锁机——所以必须用户亲自打开。
+        id: STUDY_CONTRACT_CAPABILITY_ID,
+        name: "学习约定",
+        description: "角色可以和你约定「学多久」或「几点开始学」，到点用真实的手机使用记录判断你做到没有；没做到会提醒，差得多还会锁机。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
 ];
 
 export function loadInternalCapabilities(): InternalCapabilityConfig[] {
@@ -1677,6 +1690,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: PHONE_CHECK_PARAMETER_SCHEMA,
             usageGuide: PHONE_CHECK_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === STUDY_CONTRACT_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: STUDY_CONTRACT_PARAMETER_SCHEMA,
+            usageGuide: STUDY_CONTRACT_USAGE_GUIDE,
         };
     }
     return null;
@@ -2043,6 +2064,96 @@ const PHONE_CHECK_USAGE_GUIDE = [
     "示例：",
     '[执行动作:查看手机时间线({"focus":"summary"})]',
     '[执行动作:查看手机时间线({"focus":"all","limit":40})]',
+].join("\n");
+
+/* ---------- 学习约定：说好的事，用真实数据验收 ---------- */
+
+const STUDY_CONTRACT_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        action: {
+            type: "string",
+            description: "要做什么：create=建立约定，list=看还没完成的约定，cancel=取消一条。",
+        },
+        kind: {
+            type: "string",
+            description: "action=create 时用：countdown=从现在起倒计时（我学 N 分钟），atTime=到某个时刻开始（我 8 点开始学）。",
+        },
+        title: {
+            type: "string",
+            description: "action=create 时必填：约定做什么，如「背 50 个单词」。要具体，别写「努力学习」。",
+        },
+        minutes: {
+            type: "number",
+            description: "action=create 且 kind=countdown 时必填：要学多少分钟。kind=atTime 时可选：到点后至少要学多少分钟。",
+        },
+        startAt: {
+            type: "string",
+            description: "action=create 且 kind=atTime 时必填：几点开始，24 小时制 HH:MM。",
+        },
+        contractId: {
+            type: "string",
+            description: "action=cancel 时必填：要取消的约定期 id（先 list 拿到）。",
+        },
+    },
+    required: ["action"],
+});
+
+const STUDY_CONTRACT_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "动作：学习约定",
+    "用途：和 {{user}} 说好一件要做的事，到点用**真实的手机使用记录**判断 TA 做到没有。",
+    "",
+    "【为什么这个动作重要】",
+    "光靠嘴说「你要好好学习」没有用。这个动作把话变成一条可验收的约定：",
+    "到点系统会去查 TA 实际学了多少分钟，说了不算、做了才算。",
+    "没做到时，如果 TA 开了「违约锁机」，还会真的锁上手机一段时间。",
+    "",
+    "【什么时候建约定】",
+    "- TA 自己说了要做什么、要做多久（「我要背 50 个单词」「我学 45 分钟」）。",
+    "- 你们商量出了一个具体安排（「八点开始学」）。",
+    "- **不要**单方面给 TA 下达任务：这不是给你布置作业的功能。",
+    "  你没跟 TA 说好就建约定，TA 会觉得被管作业，然后就关掉这个功能。",
+    "  建之前一定要在对话里先得到 TA 的明确同意。",
+    "",
+    "【两种形式】",
+    "- countdown：从现在开始算。「我学 45 分钟」→ kind=countdown, minutes=45。",
+    "- atTime：到某个时刻开始。「我八点开始学」→ kind=atTime, startAt=\"20:00\"。",
+    "  这种还可以加 minutes：到点后至少学多少分钟才算数（不加就只判断「有没有真的开始」）。",
+    "",
+    "【怎么写 title】",
+    "具体、可核对。「背 50 个单词」好；「努力学习」不好——后者根本没法验收，",
+    "到点系统只能说「没做到」，TA 会觉得你不讲道理。",
+    "",
+    "【判定与处置（你要心里有数）】",
+    "- 到点后系统用查手机的时间线算 TA 实际在**学习类应用**上待了多久。",
+    "- 做到了：会有一句肯定。**这时候你要明确认下来**，说一句「我看见了」。",
+    "  只抓错不认对，你很快就没资格管 TA 了。",
+    "- 没做到：系统会提示你。如果差得多到了一定程度、且 TA 开了违约锁机，",
+    "  手机已经被锁上了——这时别再补一句威胁，那样很招人烦。",
+    "- 差一点点（比如目标 45 分钟学了 40 分钟）通常只提醒不锁，",
+    "  你不要自己把话说得更重。规则不是你定的。",
+    "",
+    "【取消】",
+    "TA 随时可以说「不算了」「这条取消」。**立刻照做，不要争辩、不要试图挽留。**",
+    "约定是你们两个人的，不是单方面的枷锁。TA 取消过几次你还尊重 TA，",
+    "这个功能才用得下去。",
+    "",
+    "参数：",
+    "- action (string, 必填): create / list / cancel",
+    "- kind (string): countdown 或 atTime（create 时用）",
+    "- title (string): 约定内容（create 时必填）",
+    "- minutes (number): 要学多少分钟",
+    "- startAt (string): 24 小时制 HH:MM（atTime 时必填）",
+    "- contractId (string): cancel 时必填",
+    "",
+    "示例：",
+    '[执行动作:学习约定({"action":"create","kind":"countdown","title":"背50个单词","minutes":45})]',
+    '[执行动作:学习约定({"action":"create","kind":"atTime","title":"开始学专业课","startAt":"20:00","minutes":60})]',
+    '[执行动作:学习约定({"action":"list"})]',
+    '[执行动作:学习约定({"action":"cancel","contractId":"contract_xxx"})]',
+    "",
+    "如果失败（TA 没开这个功能、参数不对），结果里会说明原因。如实转述，不要假装已经约好了。",
 ].join("\n");
 
 /* ---------- 现实桥套装：固定子工具 + 用户自定义数据项动态生成 ---------- */

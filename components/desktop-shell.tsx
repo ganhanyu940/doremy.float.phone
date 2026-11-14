@@ -39,6 +39,7 @@ import MapApp from "@/components/map/map-app";
 import { DwellingApp } from "@/components/dwelling/dwelling-app";
 import { MascotFloat } from "@/components/mascot/mascot-float";
 import { PerceptionBootstrap } from "@/components/perception/perception-bootstrap";
+import { ContractWatcher } from "@/components/study-contract/contract-watcher";
 import { MascotPreviewHost } from "@/components/mascot/mascot-preview-host";
 import { useMusicControlsOptional } from "@/lib/music-context";
 import { PhoneResourcesApp, type ResourceSubPage } from "@/components/phone-resources-app";
@@ -5577,6 +5578,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       </section>
       {/* 感知引擎：挂载即开始采样，卸载即停止。非壳环境自动空转 */}
       <PerceptionBootstrap />
+      {/* 学习约定结算：每分钟扫一次到期的约定，用真实使用记录判定 */}
+      <ContractWatcher />
       {/* 微信云同步过程可视化：拉取/上传/运行包同步与失败都在这里冒 toast */}
       <WeixinSyncToast />
     </>
