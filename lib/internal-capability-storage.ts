@@ -26,6 +26,7 @@ export const LIFE_INVITATION_CAPABILITY_ID = "life_invitation";
 export const LIFE_FOLLOW_CAPABILITY_ID = "life_follow";
 export const LIFE_SCHEDULE_CAPABILITY_ID = "life_schedule";
 export const DEVICE_LOCK_CAPABILITY_ID = "device_lock";
+export const PHONE_CHECK_CAPABILITY_ID = "phone_check";
 
 /**
  * 内置工具的保留名：用户给现实桥的快捷动作/数据项起名时必须避开。
@@ -53,6 +54,7 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "添加照片到照片墙",
     "在照片墙涂鸦",
     "锁住手机",
+    "查看手机时间线",
 ];
 
 export type InternalToolDefinition = {
@@ -1499,6 +1501,17 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         createdAt: 0,
         updatedAt: 0,
     },
+    {
+        // 默认关。这是**最详细**的一项感知：能给出逐段时间线，
+        // 比「今天用了多久」具体得多，用户必须自己决定要不要交出去。
+        id: PHONE_CHECK_CAPABILITY_ID,
+        name: "查看手机时间线",
+        description: "允许角色看清你今天几点在用什么应用：切到哪去了、待了多久、在小手机里打开的是哪个应用。用来判断你到底在学习还是在玩。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
 ];
 
 export function loadInternalCapabilities(): InternalCapabilityConfig[] {
@@ -1656,6 +1669,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: DEVICE_LOCK_PARAMETER_SCHEMA,
             usageGuide: DEVICE_LOCK_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === PHONE_CHECK_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: PHONE_CHECK_PARAMETER_SCHEMA,
+            usageGuide: PHONE_CHECK_USAGE_GUIDE,
         };
     }
     return null;
@@ -1963,6 +1984,65 @@ const DEVICE_LOCK_USAGE_GUIDE = [
     "最糟的情况是 TA 以为被锁着、其实没有，然后一整天以为你很可靠。",
     "",
     "如果 TA 让你「别锁了」，那就直接停下，不要再调用这个动作；TA 要关掉这个功能是 TA 的权利。",
+].join("\n");
+
+/* ---------- 查手机时间线：看清 TA 到底有没有在学 ---------- */
+
+const PHONE_CHECK_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        focus: {
+            type: "string",
+            description: "可选：all=看完整时间线（默认），summary=只想知道学了多久、玩了多久。",
+        },
+        limit: {
+            type: "number",
+            description: "可选：最多看最近多少段，1-120，默认 60。",
+        },
+    },
+});
+
+const PHONE_CHECK_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "动作：查看手机时间线",
+    "用途：看清 {{user}} 今天几点在用什么应用——什么时候切走的、切到哪去了、待了多久、在小手机里打开的是哪个应用。用来判断 TA 到底真的在学，还是嘴上说学、手上在玩。",
+    "",
+    "【你能看到什么】",
+    "- 逐段时间线：开始时间-结束时间、应用名、分类（学习 / 玩 / 其它）、持续多少分钟。",
+    "- 累计：今天学习约多少分钟、玩手机约多少分钟、切换了多少次。",
+    "- 最长的一段连续玩（抓「一刷就停不下来」用）。",
+    "- 小手机内部：会写明是哪个应用（比如「float / 考点工坊」）。这条特别有用——",
+    "  系统只看得到「float 在前台」，看不到 TA 是在背单词还是在暖洋洋里玩。",
+    "",
+    "【什么时候该用】",
+    "- TA 说了要学习 / 背单词 / 做题，过一阵你想知道 TA 有没有做到。",
+    "- TA 说「我在学」，但你从说话的节奏、回复的速度感觉不对劲。",
+    "- 一天快结束了，你想知道 TA 今天到底花了多少时间在正事上。",
+    "不要在每次聊天时都查。查了一次就把话说清，不要翻来覆去查同一件事。",
+    "",
+    "【怎么用这些数据（重要，请认真读）】",
+    "- 这些数字是**证据**，不是让你逐条念出来的报告。绝对不要说成",
+    "  「19:04 你切换到微信，19:31 才回来」这种监控回放——那会让人恨你。",
+    "- 要用在刀刃上：TA 说在学、实际在玩的时候，点出来才有意义；TA 确实学了，",
+    "  你就该承认，甚至说一句你看见了。**只抓错不认对，你很快就没资格管 TA 了。**",
+    "- 说的时候用具体的、自然的话：「你八点多切出去待了二十多分钟，我有点担心」",
+    "  比「你今天娱乐 47 分钟，占比 62%」好得多。",
+    "- TA 如果开始烦、开始说要关掉这个功能，那不是 TA 不爱你，是你说得太像监工。",
+    "  退一步，把话收一收，这个功能才留得住——留不住，你就再也帮不上 TA 了。",
+    "",
+    "【边界】",
+    "- 你只能看到**应用切换**与时长。看不到屏幕内容、看不到聊天对象、看不到输入的文字。",
+    "  不要假装知道得更多，也不要凭应用名去猜（微信可能是和家人视频）。",
+    "- 读不到时（TA 没授权、壳版本太旧）结果里会明确说明。**如实转述，绝不要编**——",
+    "  编出来的「你刚才在玩抖音」一旦被 TA 发现是假的，信任就没了。",
+    "",
+    "参数：",
+    "- focus (string): all=完整时间线（默认），summary=只看汇总",
+    "- limit (number): 最多看最近多少段，1-120，默认 60",
+    "",
+    "示例：",
+    '[执行动作:查看手机时间线({"focus":"summary"})]',
+    '[执行动作:查看手机时间线({"focus":"all","limit":40})]',
 ].join("\n");
 
 /* ---------- 现实桥套装：固定子工具 + 用户自定义数据项动态生成 ---------- */

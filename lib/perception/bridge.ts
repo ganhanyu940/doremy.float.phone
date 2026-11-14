@@ -23,6 +23,8 @@ type PerceptionBridgeLike = {
   hasStepPermission?: () => boolean;
   requestStepPermission?: () => boolean;
   readUsageStats?: (maxEntries: number) => string;
+  /** 逐段前后台切换时间线（1.0.36 起）。老壳没有这个方法，调用方需特性检测。 */
+  readUsageTimeline?: (maxSegments: number) => string;
   configureBackgroundPerception?: (json: string) => boolean;
   supportsBackgroundDwellTracking?: () => boolean;
   getLocationCapabilities?: () => string;
@@ -149,6 +151,56 @@ export function readUsageStats(maxEntries = 12): AppUsageEntry[] {
 /** 壳是否提供使用统计读取（老 APK 没有）。 */
 export function supportsUsageStats(): boolean {
   return typeof bridge()?.readUsageStats === "function";
+}
+
+/**
+ * 一段前台应用使用记录（逐段前后台切换）。
+ *
+ * 与 AppUsageEntry 的区别：那个是「今天累计多久」的汇总，
+ * 这个是「从几点到几点在用什么」，用来回答「何时在干嘛」。
+ */
+export type UsageTimelineSegment = {
+  package: string;
+  label: string;
+  /** 进入前台的毫秒时间戳 */
+  startAt: number;
+  /** 离开前台的毫秒时间戳 */
+  endAt: number;
+  /** 持续秒数（原生已算好，避免两边时区/取整不一致） */
+  seconds: number;
+};
+
+/**
+ * 读今天的前台应用切换时间线（按时间正序）。
+ *
+ * 需要壳为 1.0.36 及以上并提供 readUsageTimeline。老壳、未授权、
+ * 读不到一律返回空数组——调用方如实说「读不到」，绝不编造。
+ */
+export function loadAppUsageTimeline(maxSegments = 400): UsageTimelineSegment[] {
+  try {
+    const raw = bridge()?.readUsageTimeline?.(maxSegments);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is UsageTimelineSegment => (
+        !!item
+        && typeof item === "object"
+        && typeof (item as UsageTimelineSegment).package === "string"
+        && Number.isFinite((item as UsageTimelineSegment).startAt)
+        && Number.isFinite((item as UsageTimelineSegment).endAt)
+        && Number.isFinite((item as UsageTimelineSegment).seconds)
+      ))
+      .map(item => ({ ...item, label: item.label || item.package }))
+      .sort((a, b) => a.startAt - b.startAt);
+  } catch {
+    return [];
+  }
+}
+
+/** 壳是否提供时间线读取（1.0.36 才有）。 */
+export function supportsUsageTimeline(): boolean {
+  return typeof bridge()?.readUsageTimeline === "function";
 }
 
 /** 是否有原生后台连续停留计时；老 APK 自动回退网页端实现。 */

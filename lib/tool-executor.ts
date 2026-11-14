@@ -25,8 +25,14 @@ import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { executeLifeToolCall } from "./life/life-tools";
 import { appendLifeTimelineEntry, loadVirtualLifeState, saveVirtualLifeState } from "./life/life-storage";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, PHONE_CHECK_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { describePhoneLockStatus, runCharacterLock, runCharacterUnlock } from "./device-lock";
+import {
+    classifyTimeline,
+    describeTimelineForCharacter,
+    loadPhoneCheckConfig,
+    summarizeTimeline,
+} from "./phone-check";
 import { createPhotoWallId, loadPhotoWallState, savePhotoWallState, type PhotoWallDoodle, type PhotoWallCreationRecord, type PhotoWallPhoto } from "./photo-wall-storage";
 import { generateImageFromConfiguredApi } from "./image-generation-service";
 import {
@@ -884,6 +890,7 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (call.name === "请求看屏幕") return executeCheckInRequestTool(call, context);
     // 同样必须排在现实桥之前：用户完全可能把自己的快捷动作命名成「锁住手机」。
     if (call.name === "锁住手机") return executeDeviceLockTool(call, context);
+    if (call.name === "查看手机时间线") return executePhoneCheckTool(call, context);
     if (isRealityBridgeToolName(call.name)) return executeRealityBridgeTool(call, context);
     if (call.name === "稍后主动联系" || call.name === "设置定时醒来") return executeTimedWakeTool(call, context);
 
@@ -1223,6 +1230,101 @@ async function executeSystemCalendarWriteTool(call: ToolCall): Promise<ToolResul
         success: true,
         data: `已写进 TA 的系统日历：${whenText}「${title}」，到点系统会提醒 TA。`,
         userNotice: `已把「${title}」记进 TA 的日历`,
+    };
+}
+
+/**
+ * 查手机时间线：让角色看清用户今天几点在用什么应用、是不是真的在学。
+ *
+ * 三道门控（任一不过就明确说明，绝不编造）：
+ *   ① 能力开关（设置 → 角色管我 → 允许角色看时间线）
+ *   ② 用户是否授权「使用情况访问」（系统特殊权限）
+ *   ③ 壳版本是否支持时间线（1.0.36+）
+ *
+ * 门控都在这里现读：用户随时可能在设置里关掉，而模型上下文还停在上一次。
+ */
+async function executePhoneCheckTool(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
+    const capability = getInternalCapability(PHONE_CHECK_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "「查看手机时间线」能力未启用（设置 → 角色管我）",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "查看手机时间线能力未启用",
+        };
+    }
+
+    const config = loadPhoneCheckConfig();
+    if (!config.allowCharacterRead) {
+        return {
+            name: call.name,
+            success: false,
+            error: "TA 还没有允许角色查看手机时间线（设置 → 角色管我）",
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "TA 没有开放时间线",
+        };
+    }
+
+    const segments = classifyTimeline(config);
+    if (!segments.length) {
+        // 三种「空」的原因对用户意味着完全不同的处置，不能混成一句：
+        // 老壳没这个接口 / 没授权 / 今天真没怎么用。
+        const supported = (() => {
+            try {
+                return typeof (window as unknown as { AndroidShell?: { readUsageTimeline?: unknown } })
+                    .AndroidShell?.readUsageTimeline === "function";
+            } catch {
+                return false;
+            }
+        })();
+        const reason = !supported
+            ? "当前 App 版本不支持读时间线（需要安卓壳 1.0.36 及以上）"
+            : "读不到今天的时间线：TA 可能没有授予「使用情况访问」权限，或者今天还没怎么用手机";
+        return {
+            name: call.name,
+            success: false,
+            error: reason,
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "读不到时间线",
+        };
+    }
+
+    const summary = summarizeTimeline(segments);
+    const focus = cleanToolString(call.args?.focus, 20).toLowerCase();
+    const limit = numberArg(call.args?.limit, 1, 120, 60);
+
+    if (focus === "summary") {
+        const fmt = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟` : `${minutes} 分钟`);
+        const parts = [
+            `今天累计：学习约 ${fmt(summary.studyMinutes)}，玩手机约 ${fmt(summary.playMinutes)}，切换 ${summary.switchCount} 次。`,
+        ];
+        if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
+            const at = new Date(summary.longestPlayStreak.startAt);
+            const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+            parts.push(`最长一段连续玩：${clock} 起，「${summary.longestPlayStreak.label}」约 ${summary.longestPlayStreak.minutes} 分钟。`);
+        }
+        return {
+            name: call.name,
+            success: true,
+            data: parts.join("\n"),
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "看了看你今天的时间线",
+        };
+    }
+
+    const trimmed: typeof summary = { ...summary, segments: summary.segments.slice(-limit) };
+    return {
+        name: call.name,
+        success: true,
+        data: describeTimelineForCharacter(trimmed),
+        continueConversation: true,
+        persistToHistory: false,
+        userNotice: "看了看你今天在用什么",
     };
 }
 

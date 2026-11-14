@@ -56,8 +56,10 @@ android {
         //         "前台应用变化"的无障碍事件（包名是本应用→被判放行→拆遮罩→
         //         被拦应用夺回焦点→再盖），形成死循环。现在用具名根视图识别并
         //         忽略自身窗口事件，另加 400ms 防抖与 blocked 事件去重。
-        versionCode 34
-        versionName "1.0.35"
+        // 1.0.36：查手机时间线。新增 readUsageTimeline（逐段前后台切换的精确时刻），
+        //         支撑「何时在干嘛、切走多久、切到哪去了」，以及 float 内部用哪个 APP。
+        versionCode 35
+        versionName "1.0.36"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

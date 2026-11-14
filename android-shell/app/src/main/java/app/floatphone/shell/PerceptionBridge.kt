@@ -2,6 +2,7 @@ package app.floatphone.shell
 
 import android.Manifest
 import android.app.AppOpsManager
+import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -307,6 +308,108 @@ class PerceptionBridge(private val context: Context) {
     }
 
     /**
+     * 读「今天每一次前台应用切换」的时间线（1.0.36 新增）。
+     *
+     * 与 usageStatsJson 的关系：那个只给「各应用今天累计用了多久」的汇总，
+     * 刻意不给时间点。这里给的是**逐段前后台切换**，用来回答用户真正的问题
+     * ——「我刚才在干嘛、什么时候切走的、切到哪去了」。
+     *
+     * 数据来源：UsageStatsManager.queryEvents() 的 ACTIVITY_RESUMED /
+     * ACTIVITY_PAUSED 事件（API 29+ 的叫法；更早是 MOVE_TO_FOREGROUND /
+     * MOVE_TO_BACKGROUND）。每对 RESUMED→PAUSED 就是一段「这个应用在前台」。
+     *
+     * 边界（用户已在需求里明确同意扩大到这里）：
+     *  - 只读应用切换，不读界面内容、不读输入、不截屏、不上传；
+     *  - 只查当天，不跨天回溯；
+     *  - 段数有上限（最多 maxSegments 段），防止一天几百次切换把桥撑爆；
+     *  - 未授权时返回空数组，调用方如实说「读不到」而不是编。
+     *
+     * @param maxSegments 最多返回多少段（按时间正序，最新的在最后）。
+     */
+    fun usageTimelineJson(maxSegments: Int): String {
+        val result = JSONArray()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return result.toString()
+        if (!hasUsageStatsAccess()) return result.toString()
+        return try {
+            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val now = System.currentTimeMillis()
+            val begin = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+
+            // 事件类型常量分版本：API 29 起改名，这里两个都认，
+            // 否则在 Android 9 及以下会一条都读不到（静默空数组，很难查）。
+            val resumedTypes = setOf(
+                UsageEvents.Event.MOVE_TO_FOREGROUND,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) UsageEvents.Event.ACTIVITY_RESUMED else UsageEvents.Event.MOVE_TO_FOREGROUND,
+            )
+            val pausedTypes = setOf(
+                UsageEvents.Event.MOVE_TO_BACKGROUND,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) UsageEvents.Event.ACTIVITY_PAUSED else UsageEvents.Event.MOVE_TO_BACKGROUND,
+            )
+
+            val segments = ArrayList<Triple<String, Long, Long>>() // pkg, start, end
+            var currentPkg: String? = null
+            var currentStart = 0L
+
+            val events = usm.queryEvents(begin, now)
+            val event = UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                if (!events.getNextEvent(event)) break
+                val pkg = event.packageName ?: continue
+                val at = event.timeStamp
+                when {
+                    event.eventType in resumedTypes -> {
+                        // 上一段没等到 PAUSED 就被新的 RESUMED 顶掉（常见于
+                        // 应用崩溃 / 系统直接切走）：按这一刻收尾，不要丢掉这一段。
+                        currentPkg?.let { prev ->
+                            if (at > currentStart) segments.add(Triple(prev, currentStart, at))
+                        }
+                        currentPkg = pkg
+                        currentStart = at
+                    }
+                    event.eventType in pausedTypes -> {
+                        if (currentPkg == pkg && at > currentStart) {
+                            segments.add(Triple(pkg, currentStart, at))
+                        }
+                        if (currentPkg == pkg) currentPkg = null
+                    }
+                }
+            }
+            // 最后一段还没收到 PAUSED：说明此刻仍在前台，收到「现在」为止。
+            currentPkg?.let { pkg ->
+                if (now > currentStart) segments.add(Triple(pkg, currentStart, now))
+            }
+
+            val limit = maxSegments.coerceIn(1, 500)
+            val sliced = if (segments.size > limit) segments.subList(segments.size - limit, segments.size) else segments
+            for ((pkg, start, end) in sliced) {
+                val seconds = ((end - start) / 1000L).toInt()
+                // 少于 3 秒的不算一段：那种几乎都是系统拉起某个组件、
+                // Activity 闪一下，报出来只会变成噪声，把真正的时间线淹没。
+                if (seconds < 3) continue
+                result.put(
+                    JSONObject()
+                        .put("package", pkg)
+                        .put("label", appLabel(pkg))
+                        .put("startAt", start)
+                        .put("endAt", end)
+                        .put("seconds", seconds),
+                )
+            }
+            result.toString()
+        } catch (e: Throwable) {
+            result.toString()
+        }
+    }
+
+    /** 使用情况访问是否已授权（时间线与使用时长都依赖它）。 */
+    fun usageStatsGranted(): Boolean = hasUsageStatsAccess()
+
+    /**
      * 一次取全的设备快照。网页侧的采样定时器每次只跨桥一次，
      * 比分别问电量、问网络少一半调用开销。
      */
@@ -343,6 +446,9 @@ class PerceptionBridge(private val context: Context) {
         // 混为一谈会让用户以为手机不支持、从而放弃授权。
         .put("usageStats", Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
         .put("usageStatsGranted", hasUsageStatsAccess())
+        // 时间线（1.0.36）：逐段前后台切换，用来回答「何时在干嘛」。
+        // 与 usageStats 同一份授权，所以不另报授权态。
+        .put("usageTimeline", Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
         // 睡眠接的是 Health Connect（见 HealthBridge）：能力上是支持的，
         // 「装没装 / 授没授权」另由健康桥回答——不在这里报，免得两处状态打架。
         .put("sleep", true)

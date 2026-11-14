@@ -1927,6 +1927,22 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         }
 
         /**
+         * 读今天的前台应用切换时间线（JSON 数组，按时间正序）。
+         *
+         * 每段：{package, label, startAt, endAt, seconds}。
+         * 与 readUsageStats 的区别：那个是「各应用累计多久」的汇总，
+         * 这里是「每次切换的精确时刻」——用户要回答的是「我刚才在干嘛、
+         * 什么时候切走的」，只有时间线能说清。
+         *
+         * 同样只在已授权「使用情况访问」且处于可信页面时才给数据。
+         */
+        @JavascriptInterface
+        fun readUsageTimeline(maxSegments: Int): String {
+            if (!isTrustedShellPage()) return "[]"
+            return perception.usageTimelineJson(maxSegments)
+        }
+
+        /**
          * 把网页端感知开关/连续使用阈值持久化给原生无障碍服务。
          * 这里只同步最小配置，不上传任何数据；后台事件仍经登录态站点 API 发送。
          */

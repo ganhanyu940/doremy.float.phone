@@ -59,6 +59,7 @@ import { hydrateVnStorage } from "@/lib/vn-storage";
 import { hydrateSettingsDb } from "@/lib/settings-db";
 import { hydrateDwellingStorage } from "@/lib/dwelling-storage";
 import { hydrateCheckPhoneStorage } from "@/lib/checkphone-storage";
+import { recordInnerAppOpen } from "@/lib/phone-check";
 import {
   DOCK_DEFAULT,
   ICONS,
@@ -4236,6 +4237,29 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     installedAt: "2026-10-24T00:00:00.000Z",
     updatedAt: "2026-10-24T00:00:00.000Z",
   };
+
+  /**
+   * 记录「当前打开的是哪个内置/自定义 APP」。
+   *
+   * 为什么要这一层：查手机的时间线来自系统 UsageEvents，系统只知道
+   * 「float 在前台」——它是个 WebView，看不到你是打开了考点工坊还是
+   * 在噼里啪啦里玩。这层信息只有网页自己知道，所以在这里留一条带时刻的
+   * 记录，读时间线时按时间拼进对应的 float 段。
+   *
+   * 用 activeApp 而非 openApp() 钩子：应用可以从桌面图标、dock、文件夹、
+   * 应用市场、深链跳转等多个入口打开，逐个去埋必然漏。盯状态最省事也不会漏。
+   * 回桌面（activeApp 为空）不记录——那不是「用某个 APP」。
+   */
+  useEffect(() => {
+    if (!activeApp) return;
+    try {
+      const customApp = getCustomAppForIcon(activeApp);
+      const label = customApp?.name || getDesktopIconMeta(activeApp)?.label || "";
+      if (label) recordInnerAppOpen(label);
+    } catch {
+      // 记录失败不影响任何功能，静默跳过
+    }
+  }, [activeApp, getCustomAppForIcon]);
 
   function closeCustomAppRunner(app: InstalledCustomApp): void {
     const launchState = customAppLaunchContext?.appId === app.id ? customAppLaunchContext : null;
