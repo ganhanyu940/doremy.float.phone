@@ -88,6 +88,15 @@ import { REALITY_BRIDGE_APP_EVENT_NAME, REALITY_BRIDGE_DATA_EVENT } from "@/lib/
 import { OnlineRoomConnection, onlineCloudApi } from "@/lib/online-room-client";
 import { submitContentReport } from "@/lib/moderation-client";
 import { speakWithSystemVoice, stopSystemVoice, listSystemVoices, getSystemTtsState } from "@/lib/system-tts";
+import {
+  isPhoneLockAvailable,
+  getPhoneLockStatus,
+  configurePhoneLock,
+  lockPhoneFor,
+  unlockPhone,
+  listLaunchableApps,
+  openAppByPackage,
+} from "@/lib/phone-lock";
 
 type CustomAppRunnerProps = {
   app: InstalledCustomApp;
@@ -520,6 +529,18 @@ html, body { min-height: 100%; }
       systemStop: function(){ return request('voice.systemStop', {}); },
       systemVoices: function(){ return request('voice.systemVoices', {}); },
       systemState: function(){ return request('voice.systemState', {}); }
+    },
+    // 锁机（白名单硬锁）。真正的拦截在原生层（LockGuard），这里只是转发。
+    // APP 跑在沙盒 iframe 里，**拿不到 window.AndroidShell**（跨域访问会抛
+    // SecurityError），所以必须走宿主转发 —— 与 voice.system* 同一套路。
+    lock: {
+      available: function(){ return request('lock.available'); },
+      status: function(){ return request('lock.status'); },
+      configure: function(payload){ return request('lock.configure', payload || {}); },
+      lock: function(payload){ return request('lock.lock', payload || {}); },
+      unlock: function(payload){ return request('lock.unlock', payload || {}); },
+      apps: function(){ return request('lock.apps'); },
+      openApp: function(payload){ return request('lock.openApp', payload || {}); }
     },
     calendar: {
       read: function(payload){ return request('calendar.read', payload || {}); },
@@ -1673,6 +1694,57 @@ export function CustomAppRunner({
     if (action === "voice.systemState") {
       requirePermission("voice.system");
       return getSystemTtsState();
+    }
+
+    // ── 锁机（转发给原生 LockGuard）──
+    // 自定义 APP 跑在沙盒 iframe 里，摸不到 window.AndroidShell，
+    // 所以锁机能力必须由宿主转一手。全部需要 lock.phone 权限。
+    if (action === "lock.available") {
+      requirePermission("lock.phone");
+      return { available: isPhoneLockAvailable() };
+    }
+    if (action === "lock.status") {
+      requirePermission("lock.phone");
+      return getPhoneLockStatus();
+    }
+    if (action === "lock.configure") {
+      requirePermission("lock.phone");
+      const list = Array.isArray(record.whitelist)
+        ? record.whitelist.map(item => String(item ?? "").trim()).filter(Boolean)
+        : [];
+      const ok = configurePhoneLock({
+        enabled: record.enabled !== false,
+        whitelist: list,
+        reason: String(record.reason ?? ""),
+        source: String(record.source ?? "custom_app"),
+      });
+      return { ok };
+    }
+    if (action === "lock.lock") {
+      requirePermission("lock.phone");
+      const minutes = Number(record.minutes);
+      const reason = String(record.reason ?? "");
+      const source = String(record.source ?? "custom_app");
+      if (!Number.isFinite(minutes) || minutes <= 0) throw new Error("lock.lock 需要 minutes。");
+      const result = lockPhoneFor(minutes, reason, source);
+      if (!result.ok) throw new Error(result.message || "锁机失败");
+      return result;
+    }
+    if (action === "lock.unlock") {
+      requirePermission("lock.phone");
+      const result = unlockPhone(String(record.source ?? "custom_app"));
+      if (!result.ok) throw new Error(result.message || "解锁失败");
+      return result;
+    }
+    if (action === "lock.apps") {
+      requirePermission("lock.phone");
+      return { apps: listLaunchableApps() };
+    }
+    if (action === "lock.openApp") {
+      requirePermission("lock.phone");
+      const pkg = String(record.package ?? "").trim();
+      if (!pkg) throw new Error("lock.openApp 需要 package。");
+      return { ok: openAppByPackage(pkg) };
     }
     if (action === "voice.resumePlayback") {
       requirePermission("voice.tts");

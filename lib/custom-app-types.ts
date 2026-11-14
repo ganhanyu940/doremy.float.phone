@@ -18,6 +18,7 @@ export type CustomAppPermission =
   | "voice.clone"
   | "voice.readProfiles"
   | "voice.system"
+  | "lock.phone"
   | "user.profile.read"
   | "user.persona.read"
   | "user.preferences.read"

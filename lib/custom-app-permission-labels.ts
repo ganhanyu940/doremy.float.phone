@@ -19,6 +19,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   "voice.clone": "克隆音色（消耗你的语音额度）",
   "voice.readProfiles": "读取语音配置列表（不含密钥）",
   "voice.system": "用手机自带的语音包朗读（免费、离线，不消耗语音额度）",
+  "lock.phone": "锁定你的手机（限制只能使用白名单里的应用，需要无障碍服务）",
   "user.profile.read": "读取用户昵称与头像",
   "user.persona.read": "读取用户人设",
   "user.preferences.read": "读取用户偏好设置",
