@@ -2240,6 +2240,60 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             return guard.statusJson().put("available", true).toString()
         }
 
+        // ── 睡前自动锁（1.0.37）────
+        //
+        // 为什么这一套必须由原生定时：网页的 setInterval 在 App 进后台后会被
+        // 系统冻结（用户实测「切屏挂后台就停了」），所以「到点检查一次」那种
+        // 网页实现，在他锁屏睡觉时根本不会跑。这里用 AlarmManager 精确闹钟，
+        // 由 BedtimeAlarmReceiver 在到点时叫醒原生来锁。
+        //
+        // 网页只负责下发配置和读回状态；判定（在不在时段、今晚是否已锁过、
+        // 用户是否解开过）全在 LockGuard 里，保持单一决策点。
+
+        /** 下发睡前锁配置：{enabled, startHour, startMinute, endHour, endMinute, reason}。 */
+        @JavascriptInterface
+        fun configureBedtimeLock(json: String): Boolean =
+            BedtimeScheduler.configure(this@MainActivity, json)
+
+        /** 睡前锁状态：{enabled, startHour, ..., nextTriggerAt, exact, lastOutcome}。 */
+        @JavascriptInterface
+        fun getBedtimeLockStatus(): String = runCatching {
+            BedtimeScheduler.statusJson(this@MainActivity)
+                .put("lastOutcome", BedtimeScheduler.lastOutcome(this@MainActivity))
+                .put("lastTriggerAt", BedtimeScheduler.lastTriggerAt(this@MainActivity))
+                .toString()
+        }.getOrDefault("{}")
+
+        /**
+         * 让网页确认「下一次会在几点响」——排查定时失效时最有用的一条信息。
+         *
+         * 拿不到精确闹钟权限时 exact=false：闹钟依然会响，但可能迟到几分钟
+         * （Doze 批量唤醒），网页面板要如实显示这个差别，不能装作一样。
+         */
+        @JavascriptInterface
+        fun rescheduleBedtimeLock(): Boolean = BedtimeScheduler.scheduleNext(this@MainActivity)
+
+        /** 取消睡前锁闹钟（用户关掉开关时调用；不漏掉的话关了还会半夜响）。 */
+        @JavascriptInterface
+        fun cancelBedtimeLock(): Boolean = runCatching {
+            BedtimeScheduler.cancel(this@MainActivity)
+            true
+        }.getOrDefault(false)
+
+        /**
+         * 用户手动解开了睡前锁：告诉他「这一轮不再锁」。
+         *
+         * 必须让原生知道，否则下一个闹钟还会照锁——那是最招人烦的失败方式。
+         */
+        @JavascriptInterface
+        fun markBedtimeUnlock(): Boolean =
+            CallControlService.instance?.currentLockGuard()?.markBedtimeUserUnlock() ?: false
+
+        /** 清掉「今晚已锁过 / 已解开」的记录（用户改设置或重新开启时用）。 */
+        @JavascriptInterface
+        fun resetBedtimeState(): Boolean =
+            CallControlService.instance?.currentLockGuard()?.resetBedtimeState() ?: false
+
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，
         // 但不接受「往我日历里写东西」。两个权限独立授予，所以状态也独立。

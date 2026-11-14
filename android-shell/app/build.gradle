@@ -58,8 +58,12 @@ android {
         //         忽略自身窗口事件，另加 400ms 防抖与 blocked 事件去重。
         // 1.0.36：查手机时间线。新增 readUsageTimeline（逐段前后台切换的精确时刻），
         //         支撑「何时在干嘛、切走多久、切到哪去了」，以及 float 内部用哪个 APP。
-        versionCode 35
-        versionName "1.0.36"
+        // 1.0.37：睡前自动锁。AlarmManager 精确闹钟 + BedtimeAlarmReceiver 在到点
+        //         叫醒原生执行锁定，开机后重排闹钟。**为什么必须做在原生**：网页的
+        //         setInterval 在 App 进后台后会被系统冻结（实测「切屏挂后台就停了」），
+        //         那种实现在用户锁屏睡觉时根本不会跑，到点永远不会锁。
+        versionCode 36
+        versionName "1.0.37"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

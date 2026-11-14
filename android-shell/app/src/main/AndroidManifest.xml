@@ -188,6 +188,14 @@
             </intent-filter>
         </receiver>
 
+        <!-- 睡前自动锁的闹钟触发点（1.0.37）。
+             必须由 AlarmManager 精确闹钟隔空叫醒：网页的定时器在 App 进后台
+             后会被系统冻结，那种实现在用户锁屏睡觉时根本不会跑、到点不会锁。
+             exported=false：只接收本应用自己排的 PendingIntent。 -->
+        <receiver
+            android:name=".BedtimeAlarmReceiver"
+            android:exported="false" />
+
         <!-- 通话浮窗服务：TYPE_APPLICATION_OVERLAY 浮在其他 App 上层。
              mediaPlayback 类型同时把进程钉在前台，网页语音才不会被系统掐断。 -->
         <service

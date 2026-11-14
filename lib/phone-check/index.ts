@@ -285,6 +285,44 @@ export const DEFAULT_CHAPTER_SOURCES = [
   { appName: "考点工坊", collection: "chapters", titleField: "chapter", groupField: "unit", courseField: "course" },
 ];
 
+/**
+ * 把所有来源 APP 的按天分桶合并成一张「日期 → 秒数」表。
+ *
+ * 为什么要合并而不是直接加各章节的数：同一天可能学了好几章，
+ * 章节相加会把这一天算成好几天。「本月有几天在学」「连续几天」必须是
+ * 去重后的全局事实——否则用户学两章就等于坚持了两天，这个数就废了。
+ *
+ * 只读，读不到返回空表（上层据此显示 0，不编造）。
+ */
+function mergeChapterDaySeconds(
+  chapterSources: ReadonlyArray<{ appName: string; collection: string }>,
+): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const source of chapterSources) {
+    try {
+      const apps = loadInstalledCustomApps().filter(app => app.name === source.appName);
+      if (!apps.length) continue;
+      const rows = readCustomAppCollection(apps[0].id, source.collection);
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        const record = row as Record<string, unknown>;
+        const byDate = (record.studyByDate && typeof record.studyByDate === "object")
+          ? record.studyByDate as Record<string, number>
+          : null;
+        if (!byDate) continue;
+        for (const [key, value] of Object.entries(byDate)) {
+          const seconds = Number(value) || 0;
+          if (seconds > 0) merged[key] = (merged[key] ?? 0) + seconds;
+        }
+      }
+    } catch {
+      // 某个来源读失败不影响其它来源
+      continue;
+    }
+  }
+  return merged;
+}
+
 /** 给 float 段配上「那段时间里最后打开的内部应用」。 */
 function attachInnerApp(segment: UsageTimelineSegment, spans: InnerAppSpan[]): string | undefined {
   let found: string | undefined;
@@ -524,36 +562,27 @@ export function buildPhoneCheckReport(
   // 这里按每条记录的分数分别汇总，取「尽量不重复」的口径：
   // 直接用每天的最大值会低估，取和会高估；备考场景下宁少算不多算，
   // 所以这里用 sum，但在给角色的措辞里明确说这是「各章节相加」。
-  const chapterPeriods: StudyPeriods = chapters.reduce(
+  const summed = chapters.reduce<StudyPeriods>(
     (acc, item) => ({
       todayMinutes: acc.todayMinutes + item.todayMinutes,
       weekMinutes: acc.weekMinutes + item.weekMinutes,
       monthMinutes: acc.monthMinutes + item.monthMinutes,
-      monthDays: Math.max(acc.monthDays, 0),
-      streakDays: Math.max(acc.streakDays, 0),
+      monthDays: acc.monthDays,
+      streakDays: acc.streakDays,
     }),
     { todayMinutes: 0, weekMinutes: 0, monthMinutes: 0, monthDays: 0, streakDays: 0 },
   );
-  // 连续天数与「本月有几天在学」是跨章节的全局事实，单独从分桶算一次
-  const merged: Record<string, number> = {};
-  for (const source of chapterSources) {
-    const apps = loadInstalledCustomApps().filter(app => app.name === source.appName);
-    if (!apps.length) continue;
-    const rows = readCustomAppCollection(apps[0].id, source.collection);
-    for (const row of rows) {
-      const record = row as Record<string, unknown>;
-      const byDate = (record.studyByDate && typeof record.studyByDate === "object")
-        ? record.studyByDate as Record<string, number>
-        : {};
-      for (const [key, value] of Object.entries(byDate)) {
-        const seconds = Number(value) || 0;
-        if (seconds > 0) merged[key] = (merged[key] ?? 0) + seconds;
-      }
-    }
-  }
-  const globalPeriods = periodsFromDaySeconds(merged);
-  chapterPeriods.monthDays = globalPeriods.monthDays;
-  chapterPeriods.streakDays = globalPeriods.streakDays;
+
+  // 「本月有几天在学」「连续几天」是跨章节的全局事实：各章节相加会重复计同一天，
+  // 所以这两项从合并后的分桶单独算一次。
+  const mergedDaySeconds = mergeChapterDaySeconds(chapterSources);
+  const globalPeriods = periodsFromDaySeconds(mergedDaySeconds);
+
+  const chapterPeriods: StudyPeriods = {
+    ...summed,
+    monthDays: globalPeriods.monthDays,
+    streakDays: globalPeriods.streakDays,
+  };
 
   return { ...base, chapters, chapterPeriods };
 }

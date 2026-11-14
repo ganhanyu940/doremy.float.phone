@@ -157,16 +157,44 @@ export function lockPhoneUntil(untilMs: number, reason: string, source = "manual
   return lockPhoneFor(minutes, reason, source);
 }
 
-/** 解锁。需要说明来源，便于事后分辨是人工解除还是到点解除。 */
+/**
+ * 解锁。需要说明来源，便于事后分辨是人工解除还是到点解除。
+ *
+ * 这里顺带做一件事：**真实由人解开的锁，要让睡前锁知道「这一轮别再锁」**。
+ * 挂在这一层而不是各个界面，是因为解锁入口有好几个（锁机台、角色、睡前锁自己），
+ * 逐个接线必然漏。漏掉的后果很具体：用户半夜解开了，下一个闹钟又把他锁回去——
+ * 那是这个功能最招人烦的失败方式。
+ *
+ * 只认 source="manual"/"console"（用户自己点的）；角色解锁和到点解锁不触发，
+ * 因为它们不代表「用户今晚不想被管」。
+ */
 export function unlockPhone(source = "manual"): LockResult {
   const native = bridge();
   if (!native?.unlockPhone) return { ok: false, message: "当前环境不支持锁机" };
   try {
     const raw = JSON.parse(native.unlockPhone(source) || "{}");
-    return raw.ok === false ? { ok: false, message: String(raw.message || "解锁失败") } : { ok: true };
+    if (raw.ok === false) {
+      return { ok: false, message: String(raw.message || "解锁失败") };
+    }
+    notifyBedtimeUserUnlocked(source);
+    return { ok: true };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : "解锁失败" };
   }
+}
+
+/**
+ * 用户自己解开时通知睡前锁。
+ *
+ * 动态 import 避免 lib/phone-lock ←→ lib/bedtime-lock 的循环依赖
+ * （bedtime-lock 要用 phone-lock 的 lockPhoneUntil）。解锁是低频动作，
+ * 这点异步代价可以忽略。
+ */
+function notifyBedtimeUserUnlocked(source: string): void {
+  if (source !== "manual" && source !== "console") return;
+  void import("./bedtime-lock/engine")
+    .then(mod => { mod.markBedtimeUnlockedByUser(); })
+    .catch(() => { /* 睡前锁没开时这里什么都不该做 */ });
 }
 
 /** 列出手机里可启动的应用（供白名单勾选）。 */

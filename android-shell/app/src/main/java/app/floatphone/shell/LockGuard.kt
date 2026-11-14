@@ -612,4 +612,154 @@ class LockGuard(private val service: AccessibilityService) {
     fun shutdown() {
         hideOverlay()
     }
+
+    // ── 睡前自动锁（1.0.37）────────────────────────────────────────
+    //
+    // 触发源在 BedtimeAlarmReceiver（AlarmManager 精确闹钟），因为网页的
+    // 定时器在 App 进后台后会被系统冻结——用户实测「切屏挂后台就停了」，
+    // 那种实现到点根本不会响。
+    //
+    // 判定放在这里而不是 Receiver 里：LockGuard 持有锁机状态与遮罩，
+    // 是「要不要拦、怎么拦」的唯一决策点（与角色锁机共用同一套）。
+    // Receiver 只负责叫醒，不做业务判断。
+
+    /** 睡前锁的偏好键（与 BedtimeScheduler 共用同一个 prefs 文件）。 */
+    private fun bedtimePrefs() = service.getSharedPreferences("native_bedtime_lock", Context.MODE_PRIVATE)
+
+    /** 今天（本轮）是否已经锁过，避免同一晚反复锁。 */
+    private fun bedtimeLockedDate(): String = bedtimePrefs().getString("lastLockDate", "").orEmpty()
+
+    private fun todayDateString(): String {
+        val cal = java.util.Calendar.getInstance()
+        return String.format(
+            java.util.Locale.US,
+            "%04d-%02d-%02d",
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    /**
+     * 算出本轮该锁到哪个时刻；不在时间窗内返回 0。
+     *
+     * 跨天支持是重点：23:00 → 06:30 是最常见的配置，直接比较「now 在不在
+     * start~end 之间」永远判不进去，所以这里按「今天开始、明天结束」处理。
+     */
+    private fun bedtimeWindowEnd(): Long {
+        val p = bedtimePrefs()
+        if (!p.getBoolean("enabled", false)) return 0L
+        val startHour = p.getInt("startHour", 23).coerceIn(0, 23)
+        val startMinute = p.getInt("startMinute", 0).coerceIn(0, 59)
+        val endHour = p.getInt("endHour", 6).coerceIn(0, 23)
+        val endMinute = p.getInt("endMinute", 30).coerceIn(0, 59)
+        val now = System.currentTimeMillis()
+
+        val startToday = java.util.Calendar.getInstance().apply {
+            timeInMillis = now
+            set(java.util.Calendar.HOUR_OF_DAY, startHour)
+            set(java.util.Calendar.MINUTE, startMinute)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val endToday = java.util.Calendar.getInstance().apply {
+            timeInMillis = now
+            set(java.util.Calendar.HOUR_OF_DAY, endHour)
+            set(java.util.Calendar.MINUTE, endMinute)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+        val crossesMidnight = endToday <= startToday
+        if (!crossesMidnight) {
+            return if (now in startToday until endToday) endToday else 0L
+        }
+        // 跨天：今天的 [start, 明天 end) 或 昨天 [start, 今天 end)
+        if (now >= startToday) {
+            return java.util.Calendar.getInstance().apply {
+                timeInMillis = now
+                set(java.util.Calendar.HOUR_OF_DAY, endHour)
+                set(java.util.Calendar.MINUTE, endMinute)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+                add(java.util.Calendar.DAY_OF_MONTH, 1)
+            }.timeInMillis
+        }
+        if (now < endToday) return endToday
+        return 0L
+    }
+
+    /**
+     * 由闹钟触发的睡前锁。返回 {locked:Boolean, message:String}。
+     *
+     * 幂等：同一晚重复触发只会锁一次（记 lastLockDate）。
+     * 用户手动解锁过当晚有效：网页侧的「今晚别再烦我」会通过
+     * configureBedtimeUnlock() 写进来，这里一并尊重。
+     */
+    fun runBedtimeLock(): JSONObject {
+        val p = bedtimePrefs()
+        if (!p.getBoolean("enabled", false)) {
+            return JSONObject().put("locked", false).put("message", "睡前锁没开启")
+        }
+        val until = bedtimeWindowEnd()
+        if (until <= 0L) {
+            return JSONObject().put("locked", false).put("message", "现在不在管的时段内")
+        }
+        if (isLocked()) {
+            return JSONObject().put("locked", false).put("message", "已经处于锁定状态")
+        }
+        val today = todayDateString()
+        if (bedtimeLockedDate() == today) {
+            return JSONObject().put("locked", false).put("message", "今晚已经锁过一次了")
+        }
+        // 用户在这一轮里自己解开过就不再锁（网页写 userUnlockAt）
+        val unlockAt = p.getLong("userUnlockAt", 0L)
+        if (unlockAt > 0L) {
+            val sinceUnlock = System.currentTimeMillis() - unlockAt
+            // 6 小时内解开过就算这一轮已放过——比精确比对时间窗更稳，
+            // 也避免网页和原生对"这一轮"的理解不一致。
+            if (sinceUnlock in 0L..(6L * 60 * 60 * 1000)) {
+                return JSONObject().put("locked", false).put("message", "你这一轮自己解开过，不再锁")
+            }
+        }
+
+        val reason = p.getString("reason", "").orEmpty().ifBlank { "这个点该睡了" }
+        // 注意：lock() 内部会把时长夹到 MAX_LOCK_MS（8 小时）。23:00→06:30 是
+        // 7.5 小时，没问题；但如果用户设成 22:00→07:00（9 小时），就会被悄悄
+        // 截到 6:00——那时人还醒着，锁却自己开了，等于没管住。
+        // 所以这里自己先算一次实际锁到几点，把截断如实报出来，不假装锁满了。
+        val requestedMs = until - System.currentTimeMillis()
+        val maxMs = 8L * 60L * 60L * 1000L
+        val truncated = requestedMs > maxMs
+        lock(until, reason, "bedtime")
+        p.edit().putString("lastLockDate", today).apply()
+        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        val actualUntil = if (truncated) System.currentTimeMillis() + maxMs else until
+        val message = if (truncated) {
+            "已锁 ${fmt.format(java.util.Date(actualUntil))}（你要的时段超过单次 8 小时上限，"
+                + "只能锁到 ${fmt.format(java.util.Date(actualUntil))}，之后会自动解开）"
+        } else {
+            "已锁到 ${fmt.format(java.util.Date(until))}"
+        }
+        return JSONObject()
+            .put("locked", true)
+            .put("message", message)
+            .put("truncated", truncated)
+            .put("until", actualUntil)
+    }
+
+    /** 网页告知「用户手动解开了」，今晚不再锁。 */
+    fun markBedtimeUserUnlock(): Boolean = runCatching {
+        bedtimePrefs().edit().putLong("userUnlockAt", System.currentTimeMillis()).apply()
+        true
+    }.getOrDefault(false)
+
+    /** 清掉「今晚已锁过 / 已解开」的记录（用户改设置或重新开启时用）。 */
+    fun resetBedtimeState(): Boolean = runCatching {
+        bedtimePrefs().edit()
+            .remove("lastLockDate")
+            .putLong("userUnlockAt", 0L)
+            .apply()
+        true
+    }.getOrDefault(false)
 }

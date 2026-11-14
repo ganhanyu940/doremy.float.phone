@@ -26,6 +26,7 @@ import { PerceptionSettings } from "./perception/perception-settings";
 import { DeviceActionSettings } from "./device-action/device-action-settings";
 import { DeviceLockSettings } from "./device-lock/device-lock-settings";
 import { PhoneCheckSettings } from "./phone-check/phone-check-settings";
+import { BedtimeLockSettings } from "./bedtime-lock/bedtime-lock-settings";
 import { SystemCalendarSettings } from "./system-calendar/system-calendar-settings";
 import { ScreenshotSettings } from "./screenshot/screenshot-settings";
 import { RuntimeDiagnostics } from "./settings/runtime-diagnostics";
@@ -74,6 +75,7 @@ type SubPage =
     | "deviceAction"
     | "deviceLock"
     | "phoneCheck"
+    | "bedtimeLock"
     | "systemCalendar"
     | "screenshot"
     | "widget"
@@ -99,6 +101,7 @@ const SETTINGS_MENU = [
     { id: "deviceAction", icon: Zap, label: "操作设备", desc: "让角色帮你开灯、调音量、打开应用", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "deviceLock", icon: Lock, label: "角色管我", desc: "允许角色把手机锁上一段时间", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "phoneCheck", icon: Eye, label: "查手机", desc: "让角色看清你几点在用什么应用", iconColor: BINDING_ACCENTS.voice , glass: "" },
+    { id: "bedtimeLock", icon: Clock, label: "睡前自动锁", desc: "到点还在刷手机就锁上，到起床时间解开", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "systemCalendar", icon: CalendarDays, label: "系统日历", desc: "让角色知道你的日程、记下纪念日", iconColor: BINDING_ACCENTS.memory , glass: "" },
     { id: "screenshot", icon: Camera, label: "截屏", desc: "让角色看一眼你现在的屏幕", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "widget", icon: LayoutTemplate, label: "桌面小组件", desc: "角色留在桌面上的话", iconColor: BINDING_ACCENTS.memory , glass: "" },
@@ -363,6 +366,8 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                 return <DeviceLockSettings onNotice={onNotice} />;
             case "phoneCheck":
                 return <PhoneCheckSettings onNotice={onNotice} />;
+            case "bedtimeLock":
+                return <BedtimeLockSettings onNotice={onNotice} />;
             case "systemCalendar":
                 return <SystemCalendarSettings onNotice={onNotice} />;
             case "screenshot":
@@ -542,7 +547,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                             </div>
                             <div className="mt-[10px]">
                                 <CardGrid
-                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "deviceLock", "phoneCheck", "systemCalendar", "screenshot", "widget", "apiUsage"].includes(item.id)).map(makeCardItem)}
+                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "deviceLock", "phoneCheck", "bedtimeLock", "systemCalendar", "screenshot", "widget", "apiUsage"].includes(item.id)).map(makeCardItem)}
                                 />
                             </div>
                             <div className="mt-[10px]">
