@@ -78,6 +78,7 @@ export function BedtimeLockSettings({ onNotice }: { onNotice?: (msg: string) => 
     refresh();
     // 打开面板时补一次判定：原生闹钟是主力，这里只是「用户刚好正用着手机」
     // 时让遮罩准时盖上的兜底，不是主链路。
+    // catchUpBedtimeLock 是模块级函数、引用恒定，不需要进依赖数组。
     try { catchUpBedtimeLock(); } catch { /* 兜底失败不影响面板 */ }
 
     const onChange = () => refresh();
@@ -104,12 +105,16 @@ export function BedtimeLockSettings({ onNotice }: { onNotice?: (msg: string) => 
     setNative(readBedtimeNativeStatus());
   }, []);
 
-  const runtime = loadBedtimeRuntime();
-  void tick; // 仅用于触发重渲染，不参与计算
+  const runtime = useMemo(() => loadBedtimeRuntime(), [config, tick]);
 
-  // 剩余时间的文字：只在面板能确认有下次触发时显示
+  // 剩余时间的文字：只在面板能确认有下次触发时显示。
+  // 把 tick 放进依赖里，是靠它触发每 30 秒重算一次；否则「约 N 分钟后」
+  // 会一直停在打开面板那一刻的数字，看起来像卡死了。
   const nextAt = native?.nextTriggerAt ?? 0;
-  const minutesToNext = nextAt > 0 ? Math.round((nextAt - Date.now()) / 60_000) : 0;
+  const minutesToNext = useMemo(
+    () => (nextAt > 0 ? Math.round((nextAt - Date.now()) / 60_000) : 0),
+    [nextAt, tick],
+  );
 
   return (
     <div className="per-shell">

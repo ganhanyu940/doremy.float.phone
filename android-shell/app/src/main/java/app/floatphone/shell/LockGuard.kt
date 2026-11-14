@@ -735,11 +735,11 @@ class LockGuard(private val service: AccessibilityService) {
         p.edit().putString("lastLockDate", today).apply()
         val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
         val actualUntil = if (truncated) System.currentTimeMillis() + maxMs else until
+        val untilText = fmt.format(java.util.Date(actualUntil))
         val message = if (truncated) {
-            "已锁 ${fmt.format(java.util.Date(actualUntil))}（你要的时段超过单次 8 小时上限，"
-                + "只能锁到 ${fmt.format(java.util.Date(actualUntil))}，之后会自动解开）"
+            "已锁到 $untilText（你要的时段超过单次 8 小时上限，只能锁到这里，之后会自动解开）"
         } else {
-            "已锁到 ${fmt.format(java.util.Date(until))}"
+            "已锁到 $untilText"
         }
         return JSONObject()
             .put("locked", true)

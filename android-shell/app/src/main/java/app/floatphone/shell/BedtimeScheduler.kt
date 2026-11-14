@@ -214,7 +214,11 @@ object BedtimeScheduler {
      */
     fun postLockedNotification(context: Context) {
         runCatching {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager ?: return
+            // 注意：这里必须用 return@runCatching 而不是裸 return。
+            // 裸 return 会从 postLockedNotification 整个返回，虽然能编过，
+            // 但会让 lambda 的推断类型变成 Nothing 分支，后面再加逻辑时很容易踩坑。
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                as? android.app.NotificationManager ?: return@runCatching
             val channelId = "bedtime_lock"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val channel = android.app.NotificationChannel(
@@ -229,16 +233,16 @@ object BedtimeScheduler {
             }
             val cfg = loadConfig(context)
             val content = cfg.reason.ifBlank { "这个点该睡了" }
-            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                android.app.Notification.Builder(context, channelId)
-            } else {
-                @Suppress("DEPRECATION")
-                android.app.Notification.Builder(context)
-            }
-            val notification = builder
+            // 用 NotificationCompat 而不是 android.app.Notification.Builder：
+            // 后者在 API < 26 需要另一个构造器，那种「按版本二选一构造」的写法
+            // 容易在 Kotlin 里踩注解位置（@Suppress 不能贴在表达式上）导致编译失败。
+            // Compat 一个构造器通吃，也不用手写版本分支。
+            val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                 .setContentTitle("手机已锁")
                 .setContentText(content)
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(content))
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
                 .setAutoCancel(true)
                 .build()
             nm.notify(8021, notification)

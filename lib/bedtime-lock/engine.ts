@@ -255,6 +255,8 @@ export function catchUpBedtimeLock(now = Date.now()): BedtimeLockOutcome | null 
   return runBedtimeLockIfDue(now);
 }
 
+/** 一次锁机动作的结果。放在使用它的函数之前——类型虽会提升，
+ *  但 eslint 的 no-use-before-define 会因此报错，别为省一行让它变红。 */
 export type BedtimeLockOutcome = {
   /** 这次调用是否真的把手机锁上了 */
   locked: boolean;

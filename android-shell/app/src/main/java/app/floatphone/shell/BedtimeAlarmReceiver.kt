@@ -32,13 +32,19 @@ class BedtimeAlarmReceiver : BroadcastReceiver() {
         runCatching { BedtimeScheduler.scheduleNext(context) }
 
         // ② 持锁干活，避免判定跑到一半被系统掐断。
+        //
+        // 这里**必须显式标注类型**：`runCatching { ... }.getOrNull()` 会推断成
+        // lambda 最后一句的类型，而 apply 的最后一句是 acquire(...)（返回 Unit），
+        // 于是 lock 会被推成 Unit?，下面 lock.isHeld / lock.release() 直接编译失败。
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val lock = runCatching {
+        val lock: PowerManager.WakeLock? = try {
             power?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "float:bedtime-lock")?.apply {
                 setReferenceCounted(false)
                 acquire(wakeLockTimeoutMs)
             }
-        }.getOrNull()
+        } catch (t: Throwable) {
+            null
+        }
 
         try {
             val guard = CallControlService.instance?.currentLockGuard()
