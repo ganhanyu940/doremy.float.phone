@@ -14,6 +14,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,11 +27,15 @@ import org.json.JSONObject
  *
  * 工作方式：
  * - 白名单模式下，前台应用不在名单里就盖一层全屏遮罩（TYPE_ACCESSIBILITY_OVERLAY），
- *   遮罩上只有倒计时，点不掉、滑不走；
- * - 电话、系统设置、本应用始终放行。**「系统设置」必须永远可达**——那是用户
- *   关掉无障碍服务的唯一逃生门，也是防止把自己彻底锁死的最后保险；
+ *   遮罩吃触摸、点不掉也滑不走，上面是倒计时 + 白名单内的应用入口 + 回到桌面；
+ * - **桌面、电话、系统设置、本应用始终放行**。桌面放行是硬锁语义成立的前提
+ *   （否则白名单应用图标点不到）；「系统设置」必须永远可达——那是用户关掉
+ *   无障碍服务的唯一逃生门，也是防止把自己彻底锁死的最后保险；
  * - 到 lockedUntil 自动解锁，遮罩自行消失；
  * - 配置由网页下发（SharedPreferences "native_lock_guard"），原生只执行不判断。
+ *
+ * 边界：被拦时的表现是「桌面和白名单能用、其他应用点开即被盖住」，
+ * 不是「整个手机只剩电话和设置」。
  *
  * 不做的事：不记录应用使用内容、不读取界面文字、不上传任何数据。
  */
@@ -54,6 +59,8 @@ class LockGuard(private val service: AccessibilityService) {
     private var overlay: View? = null
     private var countdown: TextView? = null
     private var reasonView: TextView? = null
+    /** 遮罩上的一行提示（例如"没能直接打开应用"），不参与倒计时刷新。 */
+    private var tipView: TextView? = null
 
     /** 当前是否处于锁定状态（每次从 prefs 读，避免与网页配置不同步）。 */
     fun isLocked(): Boolean {
@@ -156,10 +163,35 @@ class LockGuard(private val service: AccessibilityService) {
     }
 
     /**
-     * 永不拦截的包名：本应用、电话、系统设置、系统 UI。
+     * 放行名单的缓存。
+     *
+     * onForegroundPackageChanged 每次前台变化都会问一遍放行名单，而 alwaysAllowed()
+     * 要查 5 次 PackageManager。不缓存的话，切应用时会重复做这些查询，
+     * 在低端机上能明显拖慢"点开应用的一瞬间被挡住"的手感。
+     * 缓存 30 秒足够：用户的电话/桌面应用不会在半分钟内换掉。
+     * （不如白名单那样每次现读——白名单要跟着用户勾选立刻变，这里不需要。）
+     */
+    private var allowedCache: Set<String>? = null
+    private var allowedCacheAt: Long = 0L
+
+    private fun alwaysAllowedCached(): Set<String> {
+        val now = System.currentTimeMillis()
+        val cached = allowedCache
+        if (cached != null && now - allowedCacheAt < 30_000L) return cached
+        val fresh = alwaysAllowed()
+        allowedCache = fresh
+        allowedCacheAt = now
+        return fresh
+    }
+
+    /**
+     * 永不拦截的包名：本应用、桌面、电话、系统设置、系统 UI。
      *
      * 「系统设置」是刻意保留的逃生门：用户可以从中关掉无障碍服务来解除锁定。
      * 不做成绝对不可解 —— 真出急事时，把人锁在外面比"没管住自己"严重得多。
+     *
+     * 「桌面」是 1.0.34 补上的：遮罩吃触摸且全屏，桌面不放行的话，用户回到桌面
+     * 看到的仍是遮罩，白名单应用图标点不到 —— 白名单形同虚设。
      */
     private fun alwaysAllowed(): Set<String> {
         val result = mutableSetOf(
@@ -167,6 +199,20 @@ class LockGuard(private val service: AccessibilityService) {
             "com.android.systemui",
             "com.android.settings",
         )
+        // 桌面（启动器）必须放行。
+        //
+        // 这是 1.0.34 修的核心问题：遮罩是全屏且吃触摸的，如果桌面也被盖住，
+        // 用户按 Home 回到桌面看到的就是一张遮罩 —— 白名单里的应用图标根本点不到，
+        // 白名单等于形同虚设（实测反馈：锁上后只有电话和设置能进）。
+        // 放行桌面后，锁机的语义才回到"逐个应用被拦"：桌面能进、白名单能进，
+        // 其余应用点开即被盖住。
+        runCatching {
+            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            for (info in service.packageManager.queryIntentActivities(home, 0)) {
+                info.activityInfo?.packageName?.let { result.add(it) }
+            }
+            service.packageManager.resolveActivity(home, 0)?.activityInfo?.packageName?.let { result.add(it) }
+        }
         runCatching {
             val dial = Intent(Intent.ACTION_DIAL)
             service.packageManager.resolveActivity(dial, 0)?.activityInfo?.packageName?.let { result.add(it) }
@@ -191,7 +237,10 @@ class LockGuard(private val service: AccessibilityService) {
             hideOverlay()
             return
         }
-        if (pkg in whitelist() || pkg in alwaysAllowed()) {
+        // alwaysAllowed 用缓存版（见 alwaysAllowedCached 的注释）。
+        // whitelist() 必须每次现读：用户在锁机台的勾选要立刻生效，缓存会让
+        // "刚加进白名单却还被拦"这种问题出现。
+        if (pkg in whitelist() || pkg in alwaysAllowedCached()) {
             hideOverlay()
             return
         }
@@ -256,10 +305,59 @@ class LockGuard(private val service: AccessibilityService) {
             overlay = null
             countdown = null
             reasonView = null
+            tipView = null
             runCatching {
                 val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 wm.removeView(view)
             }
+        }
+    }
+
+    private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
+
+    private fun roundedBackground(color: Int, radiusDp: Int = 14): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+
+    /** 白名单里的应用（包名 + 显示名），供遮罩上的快捷入口用。 */
+    private fun whitelistEntries(): List<Pair<String, String>> {
+        val result = ArrayList<Pair<String, String>>()
+        // alwaysAllowed() 每次都查一遍 PackageManager，循环里反复调没必要，先取一份。
+        val always = alwaysAllowed()
+        for (pkg in whitelist()) {
+            if (pkg in always) continue // 桌面/电话/设置已经有专门入口
+            val label = runCatching {
+                val pm = service.packageManager
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            }.getOrDefault("")
+            result.add(Pair(pkg, label.ifBlank { pkg }))
+        }
+        return result.sortedBy { it.second.lowercase() }
+    }
+
+    /**
+     * 从无障碍服务里拉起另一个应用。
+     *
+     * 后台服务直接 startActivity 在 Android 10+ 会被拦，但无障碍服务属于
+     * 系统认可的"用户可见辅助"成分，实测多数机型放行；万一被拦，就返回 false，
+     * 由界面提示「点回到桌面再打开」——绝不假装成功。
+     */
+    private fun launchApp(pkg: String): Boolean {
+        // 必须用块函数体：下面有提前 return，而 Kotlin 禁止在表达式函数体
+        // （`= ...`）里写 return——1.0.32 就因为同类写法炸过一次编译。
+        return try {
+            val intent = service.packageManager.getLaunchIntentForPackage(pkg)
+            if (intent == null) {
+                false
+            } else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                service.startActivity(intent)
+                true
+            }
+        } catch (e: Throwable) {
+            false
         }
     }
 
@@ -270,10 +368,15 @@ class LockGuard(private val service: AccessibilityService) {
             isClickable = true
         }
 
+        // 内容多了要能滚（白名单可能有十几个），所以外面套 ScrollView。
+        val scroll = ScrollView(ctx).apply {
+            isFillViewport = true
+        }
+
         val column = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(56, 56, 56, 56)
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(28), dp(40), dp(28), dp(32))
         }
 
         column.addView(TextView(ctx).apply {
@@ -289,7 +392,7 @@ class LockGuard(private val service: AccessibilityService) {
             setTextColor(Color.parseColor("#6B6255"))
             textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(0, 26, 0, 6)
+            setPadding(0, dp(22), 0, dp(4))
         })
 
         val timer = TextView(ctx).apply {
@@ -307,24 +410,104 @@ class LockGuard(private val service: AccessibilityService) {
             setTextColor(Color.parseColor("#6B6255"))
             textSize = 14f
             gravity = Gravity.CENTER
-            setPadding(0, 30, 0, 0)
+            setPadding(0, dp(24), 0, 0)
             setLineSpacing(0f, 1.5f)
         }
         reasonView = reason
         column.addView(reason)
 
+        // ── 白名单快捷入口 ──
+        // 桌面已经放行，理论上用户回桌面就能点到白名单应用。但遮罩刚好盖在
+        // 当前应用上时，多一个直达入口体验更顺，也避免用户以为"整个手机都锁死了"。
+        val entries = whitelistEntries()
+        if (entries.isNotEmpty()) {
+            column.addView(TextView(ctx).apply {
+                text = "这些还能用"
+                setTextColor(Color.parseColor("#A89D8B"))
+                textSize = 12f
+                letterSpacing = 0.08f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(34), 0, dp(10))
+            })
+            for (entry in entries.take(12)) {
+                column.addView(TextView(ctx).apply {
+                    text = entry.second
+                    setTextColor(Color.parseColor("#221F1A"))
+                    textSize = 15f
+                    gravity = Gravity.CENTER
+                    setPadding(dp(18), dp(13), dp(18), dp(13))
+                    background = roundedBackground(Color.parseColor("#FFFFFF"), 14)
+                    isClickable = true
+                    setOnClickListener {
+                        if (!launchApp(entry.first)) {
+                            tipView?.let { tip ->
+                                tip.text = "没能直接打开，点下面「回到桌面」再从图标进去"
+                                tip.visibility = View.VISIBLE
+                            }
+                        }
+                    }
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { bottomMargin = dp(8) })
+            }
+        }
+
+        // 回到桌面：桌面本身在放行名单里，回去之后白名单应用都能点。
         column.addView(TextView(ctx).apply {
-            text = "电话、系统设置仍可使用"
+            text = "回到桌面"
+            setTextColor(Color.parseColor("#2B6A5B"))
+            textSize = 15f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            background = roundedBackground(Color.parseColor("#E4EDE8"), 14)
+            isClickable = true
+            setOnClickListener {
+                // 刻意不先 hideOverlay：桌面在放行名单里，回到桌面这个事件本身
+                // 就会让遮罩自动收掉。先拆遮罩再回桌面的话，万一 GLOBAL_ACTION_HOME
+                // 被系统拒绝，用户就会停在被拦的应用上，那个应用等于临时解禁了。
+                runCatching { service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME) }
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { topMargin = dp(18) })
+
+        val tip = TextView(ctx).apply {
+            text = ""
+            setTextColor(Color.parseColor("#B4452F"))
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+            visibility = View.GONE
+        }
+        tipView = tip
+        column.addView(tip)
+
+        column.addView(TextView(ctx).apply {
+            text = "桌面、电话、系统设置仍可使用"
             setTextColor(Color.parseColor("#A89D8B"))
             textSize = 12f
             gravity = Gravity.CENTER
-            setPadding(0, 46, 0, 0)
+            setPadding(0, dp(30), 0, 0)
         })
 
-        root.addView(column, FrameLayout.LayoutParams(
+        // 再套一层：内容少时垂直居中（不是贴在屏幕顶），内容多时照常滚动。
+        // isFillViewport=true 让这层在内容不满一屏时也撑到视口高度。
+        val inner = FrameLayout(ctx)
+        inner.addView(column, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER,
+            Gravity.CENTER_VERTICAL,
+        ))
+        scroll.addView(inner, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+        ))
+        root.addView(scroll, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
         ))
         refreshCountdown()
         return root

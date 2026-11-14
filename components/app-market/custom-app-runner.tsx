@@ -96,6 +96,7 @@ import {
   unlockPhone,
   listLaunchableApps,
   openAppByPackage,
+  openAccessibilitySettings,
 } from "@/lib/phone-lock";
 
 type CustomAppRunnerProps = {
@@ -540,7 +541,10 @@ html, body { min-height: 100%; }
       lock: function(payload){ return request('lock.lock', payload || {}); },
       unlock: function(payload){ return request('lock.unlock', payload || {}); },
       apps: function(){ return request('lock.apps'); },
-      openApp: function(payload){ return request('lock.openApp', payload || {}); }
+      openApp: function(payload){ return request('lock.openApp', payload || {}); },
+      // 直接跳到系统的无障碍设置页。锁机强依赖无障碍服务，而各家 ROM
+      // 把入口藏得深浅不一（vivo 尤其），让用户自己找是折磨。
+      openAccessibilitySettings: function(){ return request('lock.openAccessibilitySettings', {}); }
     },
     calendar: {
       read: function(payload){ return request('calendar.read', payload || {}); },
@@ -1745,6 +1749,10 @@ export function CustomAppRunner({
       const pkg = String(record.package ?? "").trim();
       if (!pkg) throw new Error("lock.openApp 需要 package。");
       return { ok: openAppByPackage(pkg) };
+    }
+    if (action === "lock.openAccessibilitySettings") {
+      requirePermission("lock.phone");
+      return { ok: openAccessibilitySettings() };
     }
     if (action === "voice.resumePlayback") {
       requirePermission("voice.tts");

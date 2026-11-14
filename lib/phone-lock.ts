@@ -45,6 +45,7 @@ type NativeLockBridge = {
   getLockGuardStatus?: () => string;
   listLaunchableApps?: () => string;
   openApp?: (packageName: string) => string;
+  openAccessibilitySettings?: () => boolean;
 };
 
 function bridge(): NativeLockBridge | null {
@@ -174,6 +175,23 @@ export function listLaunchableApps(): LaunchableApp[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 跳到系统的无障碍设置页。
+ * 锁机强依赖无障碍服务，而各家 ROM 把入口藏得深浅不一，让用户自己找是折磨。
+ */
+export function openAccessibilitySettings(): boolean {
+  const native = bridge();
+  if (!native?.openAccessibilitySettings) {
+    // 老版本桥没有这个方法时退回通用入口（部分 ROM 会落到无障碍列表）
+    const shell = (window as unknown as { AndroidShell?: { openAccessibilitySettings?: () => void } }).AndroidShell;
+    if (shell?.openAccessibilitySettings) {
+      try { shell.openAccessibilitySettings(); return true; } catch { return false; }
+    }
+    return false;
+  }
+  try { return native.openAccessibilitySettings() === true; } catch { return false; }
 }
 
 /** 打开一个应用（锁机后"自动拉起学习软件"用它）。 */
