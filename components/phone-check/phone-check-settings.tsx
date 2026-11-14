@@ -49,6 +49,8 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
   const [report, setReport] = useState<PhoneCheckSummary | null>(null);
   const [segments, setSegments] = useState<ClassifiedSegment[]>([]);
   const [query, setQuery] = useState("");
+  /** 章节榜看哪个区间：今天 / 本周 / 本月（用户明确要这三个，不要累计） */
+  const [chapterRange, setChapterRange] = useState<"today" | "week" | "month">("today");
 
   const refresh = useCallback(() => {
     const next = loadPhoneCheckConfig();
@@ -98,7 +100,16 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
   const timelineSupported = useMemo(() => supportsUsageTimeline(), []);
   const hasData = segments.length > 0;
   const summary = useMemo(
-    () => report ?? { studyMinutes: 0, playMinutes: 0, longestPlayStreak: null, switchCount: 0, segments: [], innerApps: [], chapters: [] },
+    () => report ?? {
+      studyMinutes: 0,
+      playMinutes: 0,
+      longestPlayStreak: null,
+      switchCount: 0,
+      segments: [],
+      innerApps: [],
+      chapters: [],
+      chapterPeriods: { todayMinutes: 0, weekMinutes: 0, monthMinutes: 0, monthDays: 0, streakDays: 0 },
+    },
     [report],
   );
 
@@ -268,22 +279,71 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
                 <div className="menu-label-group">
                   <span className="menu-label">各章节学了多少</span>
                   <span className="menu-desc">
-                    学习应用自己记的<b>累计</b>学时（不是今天新增）。这层比「考点工坊用了多久」更实——
+                    学习应用自己记的时长。这层比「考点工坊用了多久」更实——
                     它直接说明你把哪一章看到底了、哪一章还没碰。
                   </span>
                 </div>
               </div>
-              {summary.chapters.map(item => (
-                <div className="menu-item" style={{ cursor: "default" }} key={item.title}>
-                  <div className="menu-label-group">
-                    <span className="menu-label" style={{ fontSize: 13 }}>{item.title}</span>
-                    <span className="menu-desc" style={{ color: "var(--c-success, #2b8a5f)" }}>
-                      {item.minutes} 分钟
-                      {item.minutes < 10 ? "　· 还没看进去" : ""}
-                    </span>
-                  </div>
-                </div>
-              ))}
+              <div className="menu-item" style={{ cursor: "default", gap: 6 }}>
+                {(["today", "week", "month"] as const).map(range => (
+                  <button
+                    type="button"
+                    key={range}
+                    className="ui-btn ui-btn-outline"
+                    style={{
+                      flex: 1,
+                      fontSize: 12,
+                      padding: "6px 4px",
+                      opacity: chapterRange === range ? 1 : 0.55,
+                      borderColor: chapterRange === range ? "var(--c-accent, #7a5af8)" : undefined,
+                    }}
+                    onClick={() => setChapterRange(range)}
+                  >
+                    {range === "today" ? "今天" : range === "week" ? "本周" : "本月"}
+                  </button>
+                ))}
+              </div>
+              {(() => {
+                const pick = (item: { todayMinutes: number; weekMinutes: number; monthMinutes: number; minutes: number }) =>
+                  chapterRange === "today" ? item.todayMinutes : chapterRange === "week" ? item.weekMinutes : item.monthMinutes;
+                const sorted = [...summary.chapters].sort((a, b) => pick(b) - pick(a));
+                const total = sorted.reduce((sum, item) => sum + pick(item), 0);
+                return (
+                  <>
+                    <div className="menu-item" style={{ cursor: "default" }}>
+                      <div className="menu-label-group">
+                        <span className="menu-desc">
+                          {chapterRange === "today" ? "今天" : chapterRange === "week" ? "本周" : "本月"}合计{" "}
+                          <b style={{ color: "var(--c-accent, #7a5af8)" }}>{total} 分钟</b>
+                          {summary.chapterPeriods.monthDays > 0 && chapterRange === "month"
+                            ? `　· ${summary.chapterPeriods.monthDays} 天有学`
+                            : ""}
+                          {summary.chapterPeriods.streakDays > 0
+                            ? `　· 已连续 ${summary.chapterPeriods.streakDays} 天`
+                            : ""}
+                        </span>
+                      </div>
+                    </div>
+                    {sorted.map(item => {
+                      const value = pick(item);
+                      return (
+                        <div className="menu-item" style={{ cursor: "default" }} key={item.title}>
+                          <div className="menu-label-group">
+                            <span className="menu-label" style={{ fontSize: 13 }}>{item.title}</span>
+                            <span
+                              className="menu-desc"
+                              style={{ color: value > 0 ? "var(--c-success, #2b8a5f)" : "var(--c-danger, #b4452f)" }}
+                            >
+                              {value > 0 ? `${value} 分钟` : "没碰"}
+                              {`　· 累计 ${item.minutes} 分钟`}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
             </div>
           )}
           {hasData && (

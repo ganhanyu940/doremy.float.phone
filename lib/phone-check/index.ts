@@ -132,6 +132,87 @@ export function loadInnerAppSpans(): InnerAppSpan[] {
  *
  * 边界：只读，不改。读不到就返回空数组，绝不编。
  */
+/** 本地日期键 YYYY-MM-DD（按用户时区，不按 UTC——他按本地时间过日子）。 */
+export function dayKeyOf(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** 本周一 00:00（周一为一周开始，和考点工坊那边一致）。 */
+function startOfWeek(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  const offset = (d.getDay() + 6) % 7; // 周日=0 → 6
+  d.setDate(d.getDate() - offset);
+  return d.getTime();
+}
+
+/** 本月 1 日 00:00。 */
+function startOfMonth(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(1);
+  return d.getTime();
+}
+
+/**
+ * 时段合计：给定按天的分桶，算出今天/本周/本月的秒数。
+ *
+ * 为什么必须有这个：用户明确说了要「每天每周每月」，不要一个越滚越大的累计数。
+ * 累计数字对备考没有指导意义——上周学了 5 小时、这周躺平，累计照样很好看。
+ */
+export type StudyPeriods = {
+  todayMinutes: number;
+  weekMinutes: number;
+  monthMinutes: number;
+  /** 本月有几天真的学了（比总时长更能说明连续性） */
+  monthDays: number;
+  /** 从今天（或昨天）往前数，连续有学习的天数 */
+  streakDays: number;
+};
+
+function periodsFromDaySeconds(daySeconds: Record<string, number>, now = Date.now()): StudyPeriods {
+  const today = dayKeyOf(now);
+  const weekStartKey = dayKeyOf(startOfWeek(now));
+  const monthStartKey = dayKeyOf(startOfMonth(now));
+  let todaySec = 0;
+  let weekSec = 0;
+  let monthSec = 0;
+  const monthDaySet = new Set<string>();
+
+  for (const [key, value] of Object.entries(daySeconds)) {
+    const seconds = Number(value) || 0;
+    if (seconds <= 0) continue;
+    if (key === today) todaySec += seconds;
+    if (key >= weekStartKey) weekSec += seconds;
+    if (key >= monthStartKey) {
+      monthSec += seconds;
+      monthDaySet.add(key);
+    }
+  }
+
+  // 连续天数：今天还没学不算断（一天没过完），从昨天开始往前数
+  let streakDays = 0;
+  const cursor = new Date(now);
+  cursor.setHours(12, 0, 0, 0);
+  if (!(daySeconds[dayKeyOf(cursor.getTime())] > 0)) {
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  for (let guard = 0; guard < 400; guard += 1) {
+    if (!(daySeconds[dayKeyOf(cursor.getTime())] > 0)) break;
+    streakDays += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  return {
+    todayMinutes: Math.round(todaySec / 60),
+    weekMinutes: Math.round(weekSec / 60),
+    monthMinutes: Math.round(monthSec / 60),
+    monthDays: monthDaySet.size,
+    streakDays,
+  };
+}
+
 export type ChapterStudyTime = {
   /** 记录标题（如「认知发展」） */
   title: string;
@@ -139,7 +220,12 @@ export type ChapterStudyTime = {
   group?: string;
   /** 再上一层（课程），可能为空。两门课都有「第一章」时靠它区分 */
   course?: string;
+  /** 累计分钟（保留：老数据只有这个数） */
   minutes: number;
+  /** 今天 / 本周 / 本月的分钟数 */
+  todayMinutes: number;
+  weekMinutes: number;
+  monthMinutes: number;
   lastStudiedAt?: string;
 };
 
@@ -159,8 +245,13 @@ export function readChapterStudyTimes(
     return rows
       .map(row => {
         const record = row as Record<string, unknown>;
-        const seconds = Number(record.studySeconds) || 0;
-        if (seconds < 60) return null; // 不到一分钟的不列，那是噪声
+        const totalSeconds = Number(record.studySeconds) || 0;
+        // 按天分桶（v2.3 起考点工坊会写）。没有就是老记录，只能给累计数。
+        const byDate = (record.studyByDate && typeof record.studyByDate === "object")
+          ? record.studyByDate as Record<string, number>
+          : {};
+        const periods = periodsFromDaySeconds(byDate);
+        if (totalSeconds < 60 && periods.monthMinutes <= 0) return null; // 不到一分钟的算噪声
         const title = String(record[titleField] ?? "").trim();
         if (!title) return null;
         const group = String(record[groupField] ?? "").trim();
@@ -169,7 +260,10 @@ export function readChapterStudyTimes(
           title,
           group: group || undefined,
           course: course || undefined,
-          minutes: Math.round(seconds / 60),
+          minutes: Math.round(totalSeconds / 60),
+          todayMinutes: periods.todayMinutes,
+          weekMinutes: periods.weekMinutes,
+          monthMinutes: periods.monthMinutes,
           lastStudiedAt: typeof record.lastStudiedAt === "string" ? record.lastStudiedAt : undefined,
         };
       })
@@ -265,6 +359,14 @@ export type PhoneCheckSummary = {
    * 「我到底把哪一章看了多久」。数据来自 APP 自己记的 studySeconds。
    */
   chapters: ChapterStudyTime[];
+  /**
+   * 学习应用里的日/周/月合计（跨所有章节）。
+   *
+   * 和上面的 studyMinutes 不是一回事：studyMinutes 是系统时间线算出来的
+   * 「学习类应用在前台多久」，这里是 APP 内部真的在某一章上停留的时间。
+   * 两者可以互相印证——差太多就说明只是开着没在看。
+   */
+  chapterPeriods: StudyPeriods;
 };
 
 /**
@@ -373,6 +475,7 @@ export function summarizeTimeline(segments: ClassifiedSegment[]): PhoneCheckSumm
     innerApps: [],
     // 章节学时同理，由 buildPhoneCheckReport 补
     chapters: [],
+    chapterPeriods: { todayMinutes: 0, weekMinutes: 0, monthMinutes: 0, monthDays: 0, streakDays: 0 },
   };
 }
 
@@ -415,7 +518,44 @@ export function buildPhoneCheckReport(
       return { ...item, title: `${source.appName} · ${trail}` };
     }),
   ).sort((a, b) => b.minutes - a.minutes);
-  return { ...base, chapters };
+
+  // 跨章节的日/周/月合计。注意不能把各章节的 todayMinutes 相加后直接当
+  // 「今天学了多久」——同一段时间可能同时算在多个章节上（用户来回翻）。
+  // 这里按每条记录的分数分别汇总，取「尽量不重复」的口径：
+  // 直接用每天的最大值会低估，取和会高估；备考场景下宁少算不多算，
+  // 所以这里用 sum，但在给角色的措辞里明确说这是「各章节相加」。
+  const chapterPeriods: StudyPeriods = chapters.reduce(
+    (acc, item) => ({
+      todayMinutes: acc.todayMinutes + item.todayMinutes,
+      weekMinutes: acc.weekMinutes + item.weekMinutes,
+      monthMinutes: acc.monthMinutes + item.monthMinutes,
+      monthDays: Math.max(acc.monthDays, 0),
+      streakDays: Math.max(acc.streakDays, 0),
+    }),
+    { todayMinutes: 0, weekMinutes: 0, monthMinutes: 0, monthDays: 0, streakDays: 0 },
+  );
+  // 连续天数与「本月有几天在学」是跨章节的全局事实，单独从分桶算一次
+  const merged: Record<string, number> = {};
+  for (const source of chapterSources) {
+    const apps = loadInstalledCustomApps().filter(app => app.name === source.appName);
+    if (!apps.length) continue;
+    const rows = readCustomAppCollection(apps[0].id, source.collection);
+    for (const row of rows) {
+      const record = row as Record<string, unknown>;
+      const byDate = (record.studyByDate && typeof record.studyByDate === "object")
+        ? record.studyByDate as Record<string, number>
+        : {};
+      for (const [key, value] of Object.entries(byDate)) {
+        const seconds = Number(value) || 0;
+        if (seconds > 0) merged[key] = (merged[key] ?? 0) + seconds;
+      }
+    }
+  }
+  const globalPeriods = periodsFromDaySeconds(merged);
+  chapterPeriods.monthDays = globalPeriods.monthDays;
+  chapterPeriods.streakDays = globalPeriods.streakDays;
+
+  return { ...base, chapters, chapterPeriods };
 }
 
 /**
@@ -432,10 +572,11 @@ export function describeTimelineForCharacter(summary: PhoneCheckSummary): string
     // 时间线读不到，但章节学时来自本地存储、往往仍然有效。
     // 不能因为系统权限没开就把「他明明看了三章」一起吞掉——
     // 这会让角色误以为用户今天什么都没学，冤枉人。
+    const p0 = summary.chapterPeriods;
     const chapterLine = summary.chapters.length
-      ? `\n另外，学习应用里各章节的累计学时（累计到现在的总时长，不是今天新增）：${
-        summary.chapters.slice(0, 10).map(item => `${item.title} ${item.minutes} 分钟`).join("、")
-      }。`
+      ? `\n另外，学习应用里有记录：今天 ${p0.todayMinutes} 分钟，本周 ${p0.weekMinutes} 分钟，本月 ${p0.monthMinutes} 分钟（${p0.monthDays} 天有学）${
+        p0.streakDays > 0 ? `，已连续 ${p0.streakDays} 天` : ""
+      }。学得最多的几章：${summary.chapters.slice(0, 5).map(item => `${item.title} 累计 ${item.minutes} 分钟`).join("、")}。`
       : "";
     return `读不到今天的应用时间线（可能没有授予「使用情况访问」权限，或今天还没怎么用手机）。不要编造内容。${chapterLine}`;
   }
@@ -458,14 +599,34 @@ export function describeTimelineForCharacter(summary: PhoneCheckSummary): string
     const rows = summary.innerApps.slice(0, 8).map(item => `${item.app}${item.study ? "（学习）" : ""} ${item.minutes} 分钟`);
     head.push(`小手机内部各应用合计：${rows.join("、")}。`);
   }
-  // 章节级学时：比「考点工坊在前台 45 分钟」更实一层，直接对得上「哪一章看了多久」。
-  // 必须说清这是**累计**（那个 APP 自己记的总时长），不是今天新增，
-  // 否则角色会把它当成今天的成绩拿来夸或拿来骂。
+  // 学习时长：用户明确要的是「每天每周每月」，不要一个越滚越大的累计数。
+  // 所以这里先给日/周/月的总量和「有没有断」，再给章节明细。
+  const p = summary.chapterPeriods;
+  if (p.todayMinutes > 0 || p.weekMinutes > 0 || p.monthMinutes > 0) {
+    const bits: string[] = [];
+    bits.push(`今天 ${p.todayMinutes} 分钟`);
+    bits.push(`本周 ${p.weekMinutes} 分钟`);
+    bits.push(`本月 ${p.monthMinutes} 分钟（${p.monthDays} 天有学）`);
+    if (p.streakDays > 0) bits.push(`已连续 ${p.streakDays} 天`);
+    head.push(`学习应用里真实停留的时长（不是累计总数）：${bits.join("，")}。`);
+  }
+  // 章节明细优先给「今天/本周」，累计放后面——
+  // 累计再多也回答不了「今天有没有动」，那才是他要被提醒的事。
   if (summary.chapters.length) {
-    const rows = summary.chapters
-      .slice(0, 10)
-      .map(item => `${item.title} ${item.minutes} 分钟`);
-    head.push(`学习应用里各章节的累计学时（是累计到现在的总时长，不是今天新增）：${rows.join("、")}。`);
+    const byToday = [...summary.chapters].sort((a, b) => b.todayMinutes - a.todayMinutes);
+    const rows = byToday.slice(0, 8).map(item => {
+      const recent = item.todayMinutes > 0
+        ? `今天 ${item.todayMinutes} 分钟`
+        : item.weekMinutes > 0
+          ? `本周 ${item.weekMinutes} 分钟`
+          : "这周还没碰";
+      return `${item.title}（${recent}，累计 ${item.minutes} 分钟）`;
+    });
+    head.push(`各章节：${rows.join("；")}。`);
+    const untouched = summary.chapters.filter(item => item.weekMinutes <= 0).length;
+    if (untouched > 0) {
+      head.push(`其中 ${untouched} 章这周一次都没打开过——这是判断「有没有偷懒」最直接的依据，但别把它念成清单。`);
+    }
   }
   if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
     head.push(`最长一段连续玩：${clock(summary.longestPlayStreak.startAt)} 起，「${summary.longestPlayStreak.label}」约 ${summary.longestPlayStreak.minutes} 分钟。`);
@@ -484,9 +645,9 @@ export function describeTimelineForUser(summary: PhoneCheckSummary): string {
   if (!summary.segments.length) {
     // 同 describeTimelineForCharacter：宁可只报章节学时，也不要让用户
     // 以为「一整天什么都没记到」，那看起来像这功能坏了。
-    if (summary.chapters.length) {
-      const top = summary.chapters[0];
-      return `还没读到系统时间线（需授予「使用情况访问」）· 学习应用里「${top.title}」已累计 ${top.minutes} 分钟`;
+    const p = summary.chapterPeriods;
+    if (p.todayMinutes > 0 || p.weekMinutes > 0 || p.monthMinutes > 0) {
+      return `还没读到系统时间线（需授予「使用情况访问」）· 学习应用：今天 ${p.todayMinutes} 分钟 · 本周 ${p.weekMinutes} 分钟 · 本月 ${p.monthMinutes} 分钟`;
     }
     return "今天还没有可读的记录（需要授予「使用情况访问」，且今天有用过手机）。";
   }
@@ -499,10 +660,11 @@ export function describeTimelineForUser(summary: PhoneCheckSummary): string {
     const top = summary.innerApps[0];
     parts.push(`小手机里最久是「${top.app}」${top.minutes} 分钟`);
   }
-  // 只提最久的那一章：摘要是一条句子，不是报表；完整榜在面板里逐条看。
-  if (summary.chapters.length) {
-    const top = summary.chapters[0];
-    parts.push(`学得最久的是「${top.title}」${top.minutes} 分钟（累计）`);
+  // 学习应用里的日/周/月：这是用户真正想看的三个数（他说不要累计）。
+  const p = summary.chapterPeriods;
+  if (p.todayMinutes > 0 || p.weekMinutes > 0 || p.monthMinutes > 0) {
+    parts.push(`学习应用：今天 ${p.todayMinutes} 分钟 · 本周 ${p.weekMinutes} 分钟 · 本月 ${p.monthMinutes} 分钟`);
+    if (p.streakDays > 0) parts.push(`连续 ${p.streakDays} 天`);
   }
   return parts.join(" · ");
 }
