@@ -21,6 +21,7 @@
 import { loadAppUsageTimeline, type UsageTimelineSegment } from "../perception/bridge";
 import { kvGet, kvSet, registerKvMigration } from "../kv-db";
 import { loadCharacters } from "../character-storage";
+import { loadInstalledCustomApps, readCustomAppCollection } from "../custom-app-storage";
 
 const CONFIG_KEY = "ai_phone_phone_check_config_v1";
 registerKvMigration(CONFIG_KEY);
@@ -119,6 +120,77 @@ export function loadInnerAppSpans(): InnerAppSpan[] {
   }
 }
 
+/**
+ * 从某个自定义 APP 的某个数据集合里读出「章节级学时」。
+ *
+ * 用户的情况：学习资料在「考点工坊」里，他想知道的不只是「考点工坊用了 45 分钟」，
+ * 而是「第一章看了 25 分钟、第三章还没碰」。这种粒度只有那个 APP 自己知道，
+ * 因为它记的是「用户打开的是哪一份记录」。
+ *
+ * 所以这里做一层通用读取：给 APP 名 + 集合名，把带 studySeconds 的记录
+ * 整理成「标题 + 累计时长」，按用户指定字段取标题。
+ *
+ * 边界：只读，不改。读不到就返回空数组，绝不编。
+ */
+export type ChapterStudyTime = {
+  /** 记录标题（如「认知发展」） */
+  title: string;
+  /** 上层归属（单元/章），可能为空 */
+  group?: string;
+  /** 再上一层（课程），可能为空。两门课都有「第一章」时靠它区分 */
+  course?: string;
+  minutes: number;
+  lastStudiedAt?: string;
+};
+
+export function readChapterStudyTimes(
+  appName: string,
+  collection: string,
+  options?: { titleField?: string; groupField?: string; courseField?: string },
+): ChapterStudyTime[] {
+  try {
+    const apps = loadInstalledCustomApps().filter(app => app.name === appName);
+    if (!apps.length) return [];
+    const rows = readCustomAppCollection(apps[0].id, collection);
+    if (!Array.isArray(rows)) return [];
+    const titleField = options?.titleField ?? "chapter";
+    const groupField = options?.groupField ?? "unit";
+    const courseField = options?.courseField ?? "course";
+    return rows
+      .map(row => {
+        const record = row as Record<string, unknown>;
+        const seconds = Number(record.studySeconds) || 0;
+        if (seconds < 60) return null; // 不到一分钟的不列，那是噪声
+        const title = String(record[titleField] ?? "").trim();
+        if (!title) return null;
+        const group = String(record[groupField] ?? "").trim();
+        const course = String(record[courseField] ?? "").trim();
+        return {
+          title,
+          group: group || undefined,
+          course: course || undefined,
+          minutes: Math.round(seconds / 60),
+          lastStudiedAt: typeof record.lastStudiedAt === "string" ? record.lastStudiedAt : undefined,
+        };
+      })
+      .filter((item): item is ChapterStudyTime => item !== null)
+      .sort((a, b) => b.minutes - a.minutes);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 当前读哪些 APP 的章节学时。
+ *
+ * 写成配置而不是硬编码「考点工坊」：用户装了别的学习类 APP 时，
+ * 只要它按同样约定记 studySeconds 就能一起统计。
+ * 默认给考点工坊一条，是因为用户明确说了他的资料在那儿。
+ */
+export const DEFAULT_CHAPTER_SOURCES = [
+  { appName: "考点工坊", collection: "chapters", titleField: "chapter", groupField: "unit", courseField: "course" },
+];
+
 /** 给 float 段配上「那段时间里最后打开的内部应用」。 */
 function attachInnerApp(segment: UsageTimelineSegment, spans: InnerAppSpan[]): string | undefined {
   let found: string | undefined;
@@ -186,6 +258,13 @@ export type PhoneCheckSummary = {
   segments: ClassifiedSegment[];
   /** 小手机内部各应用的累计时长（按时长降序） */
   innerApps: InnerAppUsage[];
+  /**
+   * 章节级学时（如「考点工坊 · 第一章 / 认知发展 25 分钟」）。
+   *
+   * 这是比「考点工坊在前台 45 分钟」细一层的答案：用户真正想知道的是
+   * 「我到底把哪一章看了多久」。数据来自 APP 自己记的 studySeconds。
+   */
+  chapters: ChapterStudyTime[];
 };
 
 /**
@@ -292,6 +371,8 @@ export function summarizeTimeline(segments: ClassifiedSegment[]): PhoneCheckSumm
     // 内部应用的累计总量另算（见 summarizeInnerApps）：这里只放时间线，
     // 由调用方带上 config 再补，避免这个函数被迫依赖配置。
     innerApps: [],
+    // 章节学时同理，由 buildPhoneCheckReport 补
+    chapters: [],
   };
 }
 
@@ -309,10 +390,32 @@ export function withInnerApps(
   return { ...summary, innerApps: summarizeInnerApps(summary.segments, spans, config.studyInnerApps) };
 }
 
-/** 一步到位：读时间线 + 归类 + 汇总（含内部应用排行）。面板与角色都走这个。 */
-export function buildPhoneCheckReport(config: PhoneCheckConfig): PhoneCheckSummary {
+/**
+ * 一步到位：读时间线 + 归类 + 汇总（含内部应用排行 + 章节级学时）。
+ * 面板与角色都走这个，避免两处算出不同的数。
+ */
+export function buildPhoneCheckReport(
+  config: PhoneCheckConfig,
+  chapterSources: typeof DEFAULT_CHAPTER_SOURCES = DEFAULT_CHAPTER_SOURCES,
+): PhoneCheckSummary {
   const segments = classifyTimeline(config);
-  return withInnerApps(summarizeTimeline(segments), config);
+  const base = withInnerApps(summarizeTimeline(segments), config);
+  // 章节级学时：把各来源 APP 的记录合并成一张榜（标题带上来源名，
+  // 否则两个 APP 都有「第一章」时会混在一起分不清）
+  const chapters = chapterSources.flatMap(source =>
+    readChapterStudyTimes(source.appName, source.collection, {
+      titleField: source.titleField,
+      groupField: source.groupField,
+      courseField: source.courseField,
+    }).map(item => {
+      // 标题拼成「APP · 课程 / 单元 / 章节」，缺哪层就跳哪层。
+      // 不带上课程的话，「教育心理学·第一章」和「数据结构·第一章」
+      // 在榜上会变成两条一模一样的「第一章」，谁也分不清。
+      const trail = [item.course, item.group, item.title].filter(Boolean).join(" / ");
+      return { ...item, title: `${source.appName} · ${trail}` };
+    }),
+  ).sort((a, b) => b.minutes - a.minutes);
+  return { ...base, chapters };
 }
 
 /**
@@ -326,7 +429,15 @@ export function buildPhoneCheckReport(config: PhoneCheckConfig): PhoneCheckSumma
  */
 export function describeTimelineForCharacter(summary: PhoneCheckSummary): string {
   if (!summary.segments.length) {
-    return "读不到今天的应用时间线（可能没有授予「使用情况访问」权限，或今天还没怎么用手机）。不要编造内容。";
+    // 时间线读不到，但章节学时来自本地存储、往往仍然有效。
+    // 不能因为系统权限没开就把「他明明看了三章」一起吞掉——
+    // 这会让角色误以为用户今天什么都没学，冤枉人。
+    const chapterLine = summary.chapters.length
+      ? `\n另外，学习应用里各章节的累计学时（累计到现在的总时长，不是今天新增）：${
+        summary.chapters.slice(0, 10).map(item => `${item.title} ${item.minutes} 分钟`).join("、")
+      }。`
+      : "";
+    return `读不到今天的应用时间线（可能没有授予「使用情况访问」权限，或今天还没怎么用手机）。不要编造内容。${chapterLine}`;
   }
   const clock = (ms: number) => {
     const date = new Date(ms);
@@ -347,6 +458,15 @@ export function describeTimelineForCharacter(summary: PhoneCheckSummary): string
     const rows = summary.innerApps.slice(0, 8).map(item => `${item.app}${item.study ? "（学习）" : ""} ${item.minutes} 分钟`);
     head.push(`小手机内部各应用合计：${rows.join("、")}。`);
   }
+  // 章节级学时：比「考点工坊在前台 45 分钟」更实一层，直接对得上「哪一章看了多久」。
+  // 必须说清这是**累计**（那个 APP 自己记的总时长），不是今天新增，
+  // 否则角色会把它当成今天的成绩拿来夸或拿来骂。
+  if (summary.chapters.length) {
+    const rows = summary.chapters
+      .slice(0, 10)
+      .map(item => `${item.title} ${item.minutes} 分钟`);
+    head.push(`学习应用里各章节的累计学时（是累计到现在的总时长，不是今天新增）：${rows.join("、")}。`);
+  }
   if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
     head.push(`最长一段连续玩：${clock(summary.longestPlayStreak.startAt)} 起，「${summary.longestPlayStreak.label}」约 ${summary.longestPlayStreak.minutes} 分钟。`);
   }
@@ -361,7 +481,15 @@ export function describeTimelineForCharacter(summary: PhoneCheckSummary): string
 
 /** 给设置页的简短摘要（不含逐段明细）。 */
 export function describeTimelineForUser(summary: PhoneCheckSummary): string {
-  if (!summary.segments.length) return "今天还没有可读的记录（需要授予「使用情况访问」，且今天有用过手机）。";
+  if (!summary.segments.length) {
+    // 同 describeTimelineForCharacter：宁可只报章节学时，也不要让用户
+    // 以为「一整天什么都没记到」，那看起来像这功能坏了。
+    if (summary.chapters.length) {
+      const top = summary.chapters[0];
+      return `还没读到系统时间线（需授予「使用情况访问」）· 学习应用里「${top.title}」已累计 ${top.minutes} 分钟`;
+    }
+    return "今天还没有可读的记录（需要授予「使用情况访问」，且今天有用过手机）。";
+  }
   const fmt = (minutes: number) => (minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟` : `${minutes} 分钟`);
   const parts = [`学习 ${fmt(summary.studyMinutes)}`, `玩 ${fmt(summary.playMinutes)}`];
   if (summary.longestPlayStreak && summary.longestPlayStreak.minutes >= 5) {
@@ -370,6 +498,11 @@ export function describeTimelineForUser(summary: PhoneCheckSummary): string {
   if (summary.innerApps.length) {
     const top = summary.innerApps[0];
     parts.push(`小手机里最久是「${top.app}」${top.minutes} 分钟`);
+  }
+  // 只提最久的那一章：摘要是一条句子，不是报表；完整榜在面板里逐条看。
+  if (summary.chapters.length) {
+    const top = summary.chapters[0];
+    parts.push(`学得最久的是「${top.title}」${top.minutes} 分钟（累计）`);
   }
   return parts.join(" · ");
 }

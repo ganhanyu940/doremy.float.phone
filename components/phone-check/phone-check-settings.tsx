@@ -98,7 +98,7 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
   const timelineSupported = useMemo(() => supportsUsageTimeline(), []);
   const hasData = segments.length > 0;
   const summary = useMemo(
-    () => report ?? { studyMinutes: 0, playMinutes: 0, longestPlayStreak: null, switchCount: 0, segments: [], innerApps: [] },
+    () => report ?? { studyMinutes: 0, playMinutes: 0, longestPlayStreak: null, switchCount: 0, segments: [], innerApps: [], chapters: [] },
     [report],
   );
 
@@ -256,6 +256,30 @@ export function PhoneCheckSettings({ onNotice }: { onNotice?: (msg: string) => v
                       style={{ color: item.study ? "var(--c-success, #2b8a5f)" : "var(--c-danger, #b4452f)" }}
                     >
                       {item.study ? "学习" : "不算学习"} · {item.minutes} 分钟
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {summary.chapters.length > 0 && (
+            <div className="menu-group" style={{ marginTop: 10, maxHeight: 240, overflowY: "auto" }}>
+              <div className="menu-item" style={{ cursor: "default" }}>
+                <div className="menu-label-group">
+                  <span className="menu-label">各章节学了多少</span>
+                  <span className="menu-desc">
+                    学习应用自己记的<b>累计</b>学时（不是今天新增）。这层比「考点工坊用了多久」更实——
+                    它直接说明你把哪一章看到底了、哪一章还没碰。
+                  </span>
+                </div>
+              </div>
+              {summary.chapters.map(item => (
+                <div className="menu-item" style={{ cursor: "default" }} key={item.title}>
+                  <div className="menu-label-group">
+                    <span className="menu-label" style={{ fontSize: 13 }}>{item.title}</span>
+                    <span className="menu-desc" style={{ color: "var(--c-success, #2b8a5f)" }}>
+                      {item.minutes} 分钟
+                      {item.minutes < 10 ? "　· 还没看进去" : ""}
                     </span>
                   </div>
                 </div>
