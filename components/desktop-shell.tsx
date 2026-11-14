@@ -41,6 +41,7 @@ import { MascotFloat } from "@/components/mascot/mascot-float";
 import { PerceptionBootstrap } from "@/components/perception/perception-bootstrap";
 import { ContractWatcher } from "@/components/study-contract/contract-watcher";
 import { BedtimeLockWatcher } from "@/components/bedtime-lock/bedtime-lock-watcher";
+import { DisciplineWatcher } from "@/components/discipline/discipline-watcher";
 import { MascotPreviewHost } from "@/components/mascot/mascot-preview-host";
 import { useMusicControlsOptional } from "@/lib/music-context";
 import { PhoneResourcesApp, type ResourceSubPage } from "@/components/phone-resources-app";
@@ -5584,6 +5585,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       {/* 睡前锁的前台兜底：主链路是原生 AlarmManager 闹钟（切后台也不停），
           这里只补「用户此刻正用着手机」时让遮罩准时盖上那个窄缝 */}
       <BedtimeLockWatcher />
+      {/* 健康系统：意图锁补算 + 起床计划对齐。主链路是原生闹钟，这里是兜底 */}
+      <DisciplineWatcher />
       {/* 微信云同步过程可视化：拉取/上传/运行包同步与失败都在这里冒 toast */}
       <WeixinSyncToast />
     </>

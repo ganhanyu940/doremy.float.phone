@@ -4,3 +4,5 @@
 export * from "./storage";
 export * from "./engine";
 export * from "./create";
+export * from "./native-bridge";
+export * from "./sync";

@@ -27,6 +27,9 @@ import { appendLifeTimelineEntry, loadVirtualLifeState, saveVirtualLifeState } f
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
 import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, PHONE_CHECK_CAPABILITY_ID, STUDY_CONTRACT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { describePhoneLockStatus, runCharacterLock, runCharacterUnlock } from "./device-lock";
+import { createIntent, describeOpenIntentsForCharacter, syncIntentsToNative } from "./intent-lock";
+import { scheduleWakeup, describeWakeupForCharacter } from "./wakeup";
+import { executeIntentLockTool, executeWakeupCallTool } from "./discipline/tools";
 import {
     buildPhoneCheckReport,
     describeTimelineForCharacter,
@@ -899,6 +902,11 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (call.name === "锁住手机") return executeDeviceLockTool(call, context);
     if (call.name === "查看手机时间线") return executePhoneCheckTool(call, context);
     if (call.name === "学习约定") return executeStudyContractTool(call, context);
+    // 健康系统的两个工具同样必须排在现实桥之前：
+    // 用户完全可能把自己的快捷动作起名成「叫我起床」，让同名动作先匹配的话，
+    // 内置工具就永远调不到（表现是「角色说定好了，实际什么也没排」）。
+    if (call.name === "记下我要去做的事") return executeIntentLockTool(call, context);
+    if (call.name === "叫我起床") return await executeWakeupCallTool(call, context);
     if (isRealityBridgeToolName(call.name)) return executeRealityBridgeTool(call, context);
     if (call.name === "稍后主动联系" || call.name === "设置定时醒来") return executeTimedWakeTool(call, context);
 

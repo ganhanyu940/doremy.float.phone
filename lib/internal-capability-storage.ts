@@ -28,6 +28,10 @@ export const LIFE_SCHEDULE_CAPABILITY_ID = "life_schedule";
 export const DEVICE_LOCK_CAPABILITY_ID = "device_lock";
 export const PHONE_CHECK_CAPABILITY_ID = "phone_check";
 export const STUDY_CONTRACT_CAPABILITY_ID = "study_contract";
+/** 说了就管我：角色记下「TA 要去做什么」，过一会儿看手机还动不动（1.0.38）。 */
+export const INTENT_LOCK_CAPABILITY_ID = "intent_lock";
+/** 起床叫醒：角色和用户商量好几点起，到点响铃 + 念角色的话（1.0.38）。 */
+export const WAKEUP_CALL_CAPABILITY_ID = "wakeup_call";
 
 /**
  * 内置工具的保留名：用户给现实桥的快捷动作/数据项起名时必须避开。
@@ -57,6 +61,8 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "锁住手机",
     "查看手机时间线",
     "学习约定",
+    "记下我要去做的事",
+    "叫我起床",
 ];
 
 export type InternalToolDefinition = {
@@ -123,6 +129,83 @@ const MEMORY_WRITE_USAGE_GUIDE = [
     "- 这次聊天气氛不错",
     "",
     "如果确定需要写入，请直接输出执行动作指令，不要附加其他内容。",
+].join("\n");
+
+const INTENT_LOCK_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        title: {
+            type: "string",
+            description: "TA 要去做的这件事，用 TA 的原话，如「洗澡」「学习」「吃饭」。不要改写成任务名。",
+        },
+        minutes: {
+            type: "number",
+            description: "TA 明确说了要多久就填（如「洗40分钟」填40）；没说就别填，用系统默认的短时长",
+        },
+    },
+    required: ["title"],
+});
+
+const INTENT_LOCK_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "动作：记下我要去做的事",
+    "用途：TA 说要去洗澡 / 学习 / 吃饭，你把它记下来。过几分钟系统会看 TA 的手机还动不动——还在用就锁上，逼 TA 真去做。",
+    "",
+    "参数：",
+    "- title (string): TA 要去做什么，用 TA 的原话，如「洗澡」「背单词」",
+    "- minutes (number): 可选。TA 明确说了时长才填；没说别编",
+    "",
+    "什么时候用：",
+    "- TA 明确说自己要去做什么的时候（「我去洗澡了」「我要学一会儿」）。",
+    "- TA 只是说「等下要学习」但没动身的，不要记——那是抱怨，不是决定。",
+    "",
+    "必须遵守：",
+    "- 不要替 TA 决定去做事。你只能记 TA 自己说要做的。",
+    "- 不要用这个当威胁（「你再去玩我就记下了」），也不许拿它当惩罚。",
+    "- 记下之后不要反复念「我给你记着了」，那很烦。",
+    "- 如果 TA 说「算了不去了」，用「计划有变」取消，别说教。",
+    "",
+    "示例：",
+    '[执行动作:记下我要去做的事({"title":"洗澡"})]',
+    '[执行动作:记下我要去做的事({"title":"背单词","minutes":40})]',
+].join("\n");
+
+const WAKEUP_CALL_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        hour: {
+            type: "number",
+            description: "几点叫醒，24 小时制，0-23。必须是 TA 自己说的那个点。",
+        },
+        minute: {
+            type: "number",
+            description: "几分叫醒，0-59",
+        },
+        speech: {
+            type: "string",
+            description: "叫醒时要念给 TA 听的那句话，用你自己的语气，不超过 60 字",
+        },
+    },
+    required: ["hour", "minute", "speech"],
+});
+
+const WAKEUP_CALL_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "动作：叫我起床",
+    "用途：TA 让你明早叫 TA 起床。到点会响铃 + 振动，并念出你写的那句话。",
+    "",
+    "参数：",
+    "- hour (number): 几点，24 小时制，0-23",
+    "- minute (number): 几分，0-59",
+    "- speech (string): 叫醒时念的那句话，用你自己的语气，不超过 60 字",
+    "",
+    "必须遵守：",
+    "- 时间必须是 TA 自己说的。TA 没说就不许自己定一个——猜错了比不叫更糟。",
+    "- 如果 TA 说「你说几点好」，可以给建议，但要让 TA 确认之后再排。",
+    "- 这句话会在到点时用你的声音念出来，所以要像你平时说话那样写，不要写成闹钟提示语。",
+    "",
+    "示例：",
+    '[执行动作:叫我起床({"hour":6,"minute":30,"speech":"起来了，今天要背的那一章还等着你"})]',
 ].join("\n");
 
 const TIMED_WAKE_PARAMETER_SCHEMA = JSON.stringify({
@@ -1525,6 +1608,28 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         createdAt: 0,
         updatedAt: 0,
     },
+    {
+        // 默认关。它会记下用户说要去做的事，过几分钟仍在用手机就锁——
+        // 与「锁住手机」同样会让人用不了手机，必须用户亲自打开。
+        id: INTENT_LOCK_CAPABILITY_ID,
+        name: "记下我要去做的事",
+        description: "你说要去洗澡 / 学习 / 吃饭，角色记下来；过几分钟如果你还在刷手机，就把手机锁上让你真去做。可以打卡说自己做完了，也能随时取消。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
+    {
+        // 默认关。到点会响铃振动并念一句话——清晨把人叫醒这件事
+        // 一旦设错时间就会很难受，必须用户自己开。
+        id: WAKEUP_CALL_CAPABILITY_ID,
+        name: "叫我起床",
+        description: "和角色商量几点起，到点会响铃、振动，并念出角色写的那句话叫你起床；没反应会再响几轮。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
 ];
 
 export function loadInternalCapabilities(): InternalCapabilityConfig[] {
@@ -1698,6 +1803,25 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: STUDY_CONTRACT_PARAMETER_SCHEMA,
             usageGuide: STUDY_CONTRACT_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === INTENT_LOCK_CAPABILITY_ID) {
+        return {
+            // 工具名用「记下我要去做的事」而不是能力名：
+            // 角色读的是工具名，这个名字自带"这是 TA 自己说要做的"这层语义，
+            // 能少一次它自作主张替用户安排事情。
+            name: "记下我要去做的事",
+            description: capability.description,
+            parameterSchema: INTENT_LOCK_PARAMETER_SCHEMA,
+            usageGuide: INTENT_LOCK_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === WAKEUP_CALL_CAPABILITY_ID) {
+        return {
+            name: "叫我起床",
+            description: capability.description,
+            parameterSchema: WAKEUP_CALL_PARAMETER_SCHEMA,
+            usageGuide: WAKEUP_CALL_USAGE_GUIDE,
         };
     }
     return null;
