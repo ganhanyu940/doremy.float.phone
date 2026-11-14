@@ -106,11 +106,39 @@ class CallControlService : AccessibilityService() {
     @Volatile private var dwellStartAt: Long = 0L
     @Volatile private var reportedPackage: String = ""
 
+    /**
+     * 服务是否正在销毁。
+     *
+     * onDestroy 里会 shutdown 掉遮罩，但事件是异步投递的：销毁过程中仍可能收到
+     * 一条 TYPE_WINDOW_STATE_CHANGED，那时再走一遍判定就会把刚拆掉的遮罩
+     * **重新加上**，而服务已经没了、再也没人能拆它 —— 留下一层点不掉的死浮层。
+     */
+    @Volatile private var destroying: Boolean = false
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val ev = event ?: return
         if (ev.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = ev.packageName?.toString().orEmpty()
         if (pkg.isEmpty()) return
+
+        // ── 过滤掉遮罩自己产生的窗口事件（1.0.35）──
+        // 遮罩是可聚焦窗口，加进去 / 拆掉都会抢一次焦点，系统因此发来一条
+        // 「前台应用变了」的事件，而它的包名**正是本应用**。本应用在放行名单里，
+        // 于是被当成"用户打开了 float，放行"→ 拆遮罩 → 被拦应用夺回焦点
+        // → 再判拦截 → 再盖…… 死循环，屏幕就是锁机画面和桌面高频闪烁。
+        //
+        // 这里必须**早退**，不能只是不交给 lockGuard：下面的 updateForegroundPackage
+        // 会把"前台应用=本应用"记进感知状态，网页侧的前台使用时长统计也会被污染。
+        // 判据只看 className：遮罩根视图是 LockGuard.OverlayRootView（具名子类），
+        // 系统发来的窗口事件 className 就是它。刻意不用 windowId / title 做判断——
+        // 那些字段各机型不可靠，而类名是确定的。
+        if (lockGuard.isOwnOverlayWindow(ev.className)) {
+            return
+        }
+
+        // 服务正在销毁时不要再触发判定：那一刻去 build 遮罩，加上的浮层会留在
+        // 屏幕上且没有任何人能再拆掉它（服务已经没了）。
+        if (destroying) return
 
         updateForegroundPackage(pkg)
         // 原有网页感知与其他壳功能继续收到前台应用变化事件。
@@ -368,6 +396,8 @@ class CallControlService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        // 先立旗再拆遮罩：中间这段时间到达的事件全部丢弃，避免把遮罩又加回来。
+        destroying = true
         if (instance === this) instance = null
         handler.removeCallbacks(dwellTicker)
         ScreenshotBridge.attach(null)

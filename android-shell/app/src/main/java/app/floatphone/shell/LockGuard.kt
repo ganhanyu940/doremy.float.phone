@@ -45,6 +45,16 @@ class LockGuard(private val service: AccessibilityService) {
         private const val PREFS = "native_lock_guard"
         private const val MAX_LOCK_MS = 8L * 60 * 60 * 1000 // 单次锁定上限 8 小时
 
+        /**
+         * 遮罩窗口的标题标记。
+         *
+         * 用途：遮罩抢到焦点时会触发一条「前台应用变化」的无障碍事件，而那条事件的
+         * 包名是本应用（遮罩归本应用管），放行名单里恰好包含本应用 —— 于是
+         * 「盖遮罩 → 事件 → 判放行 → 拆遮罩 → 被拦应用夺回焦点 → 再盖上」形成
+         * 死循环，屏幕表现为锁机画面和桌面高速交替闪烁（实测反馈，1.0.35 修）。
+         */
+        const val OVERLAY_WINDOW_TAG = "FloatLockOverlay"
+
         /** 锁机事件推给网页：'shell-lock' 事件，detail.action = lock / unlock / blocked。 */
         fun dispatch(action: String, payload: JSONObject = JSONObject()): Unit {
             val detail = JSONObject(payload.toString()).put("action", action)
@@ -61,6 +71,9 @@ class LockGuard(private val service: AccessibilityService) {
     private var reasonView: TextView? = null
     /** 遮罩上的一行提示（例如"没能直接打开应用"），不参与倒计时刷新。 */
     private var tipView: TextView? = null
+    /** 遮罩上次被拆掉的时刻，用于 showOverlay 的防抖（见那里的注释）。 */
+    @Volatile
+    private var lastHiddenAt: Long = 0L
 
     /** 当前是否处于锁定状态（每次从 prefs 读，避免与网页配置不同步）。 */
     fun isLocked(): Boolean {
@@ -242,11 +255,21 @@ class LockGuard(private val service: AccessibilityService) {
         // "刚加进白名单却还被拦"这种问题出现。
         if (pkg in whitelist() || pkg in alwaysAllowedCached()) {
             hideOverlay()
+            lastBlockedPackage = "" // 放行了，下一次被拦要重新推送
             return
         }
         showOverlay()
-        dispatch("blocked", JSONObject().put("package", pkg).put("until", lockedUntil()))
+        // 去重：同一个包连续来多条窗口事件（切页面、弹窗都会发）时只推一次。
+        // 原来每条都 dispatch，网页侧会收到一串重复的 blocked 事件。
+        if (lastBlockedPackage != pkg) {
+            lastBlockedPackage = pkg
+            dispatch("blocked", JSONObject().put("package", pkg).put("until", lockedUntil()))
+        }
     }
+
+    /** 上一次已推送过 blocked 事件的包名，避免重复推送（见 onForegroundPackageChanged）。 */
+    @Volatile
+    private var lastBlockedPackage: String = ""
 
     @Volatile
     private var lastPackage: String = ""
@@ -261,6 +284,15 @@ class LockGuard(private val service: AccessibilityService) {
             return
         }
         if (pendingShow) return
+        // 第二道保险（防抖）：遮罩刚被拆掉不到 400ms 又要求显示，说明前后台
+        // 事件正在打架（典型是遮罩与被拦应用互相抢焦点）。此时稍等一下再盖，
+        // 让系统的焦点状态稳定下来；不加这道的话，即使类名过滤漏了某条事件，
+        // 也会退化成"高频闪烁"而不是直接卡死。
+        val sinceHide = System.currentTimeMillis() - lastHiddenAt
+        if (lastHiddenAt > 0L && sinceHide in 1..400L) {
+            handler.postDelayed({ showOverlay() }, 400L - sinceHide)
+            return
+        }
         pendingShow = true
         handler.post {
             runCatching {
@@ -280,6 +312,11 @@ class LockGuard(private val service: AccessibilityService) {
                         or WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR,
                     android.graphics.PixelFormat.OPAQUE,
                 )
+                // 让系统给这个窗口一个能认出来的标题。遮罩抢焦点时会引发一条
+                // 前台应用事件，事件里带上它（部分机型放在 FLAG_ALT_FOCUSABLE_IM
+                // 之外的窗口标题字段），作为 isOwnOverlayWindow 的第二道判据。
+                // 注意别设成 FLAG_NOT_FOCUSABLE——那会让触摸穿透（见上）。
+                params.title = OVERLAY_WINDOW_TAG
                 params.gravity = Gravity.CENTER
                 // 浮层没加成功前保持 pendingShow=true，成功后交给 overlay 接管
                 wm.addView(root, params)
@@ -306,12 +343,34 @@ class LockGuard(private val service: AccessibilityService) {
             countdown = null
             reasonView = null
             tipView = null
+            lastHiddenAt = System.currentTimeMillis()
             runCatching {
                 val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 wm.removeView(view)
             }
         }
     }
+
+    /**
+     * 遮罩的根视图。刻意用**具名子类**而不是裸 FrameLayout。
+     *
+     * 原因（1.0.35 修的死循环）：遮罩是 FLAG 全开、能吃触摸的窗口，加进去就会
+     * 抢走焦点，于是系统发出一条 TYPE_WINDOW_STATE_CHANGED —— 而那条事件的
+     * 包名是**本应用**（窗口归属本应用），className 则是这个根视图的类名。
+     * 本应用在放行名单里，于是被判定为「用户打开了 float，放行」→ 拆遮罩 →
+     * 被拦的应用重新夺回焦点 → 再判拦截 → 再盖 → 再抢焦…… 表现就是
+     * 锁机画面和桌面高频交替闪烁（实测反馈）。
+     *
+     * 有了这个具名子类，className 会带上 "OverlayRootView"，据此即可识别
+     * 「这条事件是我自己的遮罩产生的」，直接忽略（见 isOwnOverlayWindow）。
+     * 不要图省事换回 FrameLayout：那样就再也分不清"用户真的打开了 float"
+     * 和"遮罩自己抢了焦点"。
+     */
+    private class OverlayRootView(context: Context) : FrameLayout(context)
+
+    /** 这条前台事件是不是本遮罩自己抢焦点产生的（不是用户切换了应用）。 */
+    fun isOwnOverlayWindow(className: CharSequence?): Boolean =
+        className != null && className.contains("OverlayRootView")
 
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
 
@@ -363,7 +422,9 @@ class LockGuard(private val service: AccessibilityService) {
 
     private fun buildOverlayView(): View {
         val ctx = service
-        val root = FrameLayout(ctx).apply {
+        // 必须是 OverlayRootView（不是 FrameLayout）：无障碍事件靠类名识别
+        // 「这条焦点变化是遮罩自己造成的」，见 OverlayRootView 的注释。
+        val root = OverlayRootView(ctx).apply {
             setBackgroundColor(Color.parseColor("#F2F0EA"))
             isClickable = true
         }
