@@ -2030,6 +2030,16 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         @JavascriptInterface
         fun findPackageByLabel(label: String): String = deviceAction.findPackageByLabel(label)
 
+        /**
+         * 列出可启动的第三方应用（JSON 数组：[{package,label}]，按名称排序）。
+         * 锁机白名单界面用它让用户直接勾选真实应用，而不是手打包名。
+         */
+        @JavascriptInterface
+        fun listLaunchableApps(): String {
+            if (!isTrustedShellPage()) return "[]"
+            return deviceAction.listLaunchableApps().toString()
+        }
+
         /** 设闹钟（会打开系统时钟 App 让用户确认）。 */
         @JavascriptInterface
         fun setAlarm(hour: Int, minute: Int, message: String): String =

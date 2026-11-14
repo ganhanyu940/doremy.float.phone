@@ -18,6 +18,7 @@ import android.os.Process
 import android.provider.AlarmClock
 import android.provider.Settings
 import android.view.KeyEvent
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -736,6 +737,50 @@ class DeviceActionBridge(private val context: Context) {
         } catch (e: Throwable) {
             JSONObject().put("ok", false).put("reason", e.message ?: "媒体控制不可用")
         }
+    }
+
+    // ── 已安装应用清单（锁机白名单用）──
+
+    /**
+     * 列出可启动的第三方应用（JSON 数组，按名称排序）。
+     *
+     * 用途：锁机的白名单要用户在**真实应用列表**里挑，不能让他手打包名。
+     *
+     * 边界：只返回「有启动入口」的应用的包名与显示名，不读任何应用数据、
+     * 不读使用记录。系统自带应用（电话、设置等）由锁机侧固定放行，不在这里列出，
+     * 避免用户误以为需要手动加白名单。本应用自身也排除。
+     */
+    fun listLaunchableApps(): JSONArray {
+        val result = JSONArray()
+        val seen = mutableSetOf<String>()
+        try {
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val activities = context.packageManager.queryIntentActivities(intent, 0)
+            for (info in activities) {
+                val pkg = info.activityInfo?.packageName ?: continue
+                if (pkg == context.packageName) continue
+                if (!seen.add(pkg)) continue
+                val label = try {
+                    info.loadLabel(context.packageManager).toString()
+                } catch (_: Throwable) {
+                    pkg
+                }
+                result.put(
+                    JSONObject()
+                        .put("package", pkg)
+                        .put("label", label.ifBlank { pkg })
+                )
+            }
+        } catch (_: Throwable) {
+            return result
+        }
+        // 按显示名排序，方便用户找（JSONArray 自身没有 sort）
+        val sorted = (0 until result.length())
+            .mapNotNull { result.optJSONObject(it) }
+            .sortedBy { it.optString("label").lowercase() }
+        val out = JSONArray()
+        sorted.forEach { out.put(it) }
+        return out
     }
 
     // ── 打开网页 ──
