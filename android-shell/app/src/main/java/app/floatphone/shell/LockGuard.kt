@@ -57,6 +57,9 @@ class LockGuard(private val service: AccessibilityService) {
 
     /** 当前是否处于锁定状态（每次从 prefs 读，避免与网页配置不同步）。 */
     fun isLocked(): Boolean {
+        // "是否正在锁" 只看 lockedUntil（未来时间戳）。
+        // 刻意不与 enabled 混用：enabled 表示"锁机功能已启用/白名单已就绪"，
+        // 如果把它也算进锁定条件，网页只是保存一次设置就会立刻把人锁住。
         val until = prefs().getLong("lockedUntil", 0L)
         if (until <= 0L) return false
         if (System.currentTimeMillis() >= until) {
@@ -64,7 +67,7 @@ class LockGuard(private val service: AccessibilityService) {
             prefs().edit().putLong("lockedUntil", 0L).apply()
             return false
         }
-        return prefs().getBoolean("enabled", false)
+        return true
     }
 
     fun lockedUntil(): Long = prefs().getLong("lockedUntil", 0L)
@@ -92,8 +95,10 @@ class LockGuard(private val service: AccessibilityService) {
         if (config.has("reason")) editor.putString("reason", config.optString("reason", "").take(200))
         if (config.has("source")) editor.putString("source", config.optString("source", "").take(80))
         editor.apply()
-        // 配置变了立刻重新判定一次：关掉锁应该马上放人
-        service.onForegroundPackageChanged(lastPackage)
+        // 配置变了立刻重新判定一次：关掉锁应该马上放人。
+        // 注意调的是本类的 onForegroundPackageChanged，不是 service 的
+        // （AccessibilityService 上没有这个方法，写成 service.xxx 会编译失败）。
+        onForegroundPackageChanged(lastPackage)
         true
     }.getOrDefault(false)
 
@@ -108,7 +113,7 @@ class LockGuard(private val service: AccessibilityService) {
             .putString("source", source.take(80))
             .apply()
         dispatch("lock", JSONObject().put("until", capped).put("reason", reason).put("source", source))
-        service.onForegroundPackageChanged(lastPackage)
+        onForegroundPackageChanged(lastPackage)
         return JSONObject()
             .put("ok", true)
             .put("until", capped)
@@ -197,11 +202,17 @@ class LockGuard(private val service: AccessibilityService) {
     @Volatile
     private var lastPackage: String = ""
 
+    /** 正在排队添加浮层（防止连续的前台事件重复 addView）。 */
+    @Volatile
+    private var pendingShow = false
+
     private fun showOverlay() {
         if (overlay != null) {
             refreshCountdown()
             return
         }
+        if (pendingShow) return
+        pendingShow = true
         handler.post {
             runCatching {
                 val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -211,19 +222,24 @@ class LockGuard(private val service: AccessibilityService) {
                     WindowManager.LayoutParams.MATCH_PARENT,
                     // TYPE_ACCESSIBILITY_OVERLAY 由无障碍服务添加，不需要 SYSTEM_ALERT_WINDOW
                     WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    // 不接收触摸：遮罩只是挡住画面，真正的拦截靠"前台包名判断 + 立刻盖回来"。
-                    // 让它可触摸会带来误触与焦点抢占问题，收益不大。
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    android.graphics.PixelFormat.TRANSLUCENT,
+                    // 关键：**不能**加 FLAG_NOT_FOCUSABLE / FLAG_NOT_TOUCHABLE。
+                    // 加了的话触摸会直接穿透到下面那个应用，遮罩只挡住画面、
+                    // 手指照样能操作抖音——那不是硬锁。
+                    // 这里刻意让它可获取焦点并吃掉所有触摸，才算真正拦住。
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        or WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR,
+                    android.graphics.PixelFormat.OPAQUE,
                 )
                 params.gravity = Gravity.CENTER
+                // 浮层没加成功前保持 pendingShow=true，成功后交给 overlay 接管
                 wm.addView(root, params)
                 overlay = root
+                pendingShow = false
                 startTicking()
             }.onFailure {
                 // 浮层加不上（厂商限制）时不要静默：让人知道锁机没生效
+                pendingShow = false
                 dispatch("error", JSONObject().put("message", it.message ?: "无法显示锁机遮罩"))
             }
         }
@@ -232,6 +248,10 @@ class LockGuard(private val service: AccessibilityService) {
     private fun hideOverlay() {
         handler.post {
             stopTicking()
+            // 标志位先清：即使下面的 removeView 抛异常，逻辑上也不再认为"浮层还在"，
+            // 避免 showOverlay 因为 overlay != null 而永远走"已存在，只刷新倒计时"分支，
+            // 结果是遮罩永远挂不掉。
+            pendingShow = false
             val view = overlay ?: return@post
             overlay = null
             countdown = null
@@ -337,9 +357,12 @@ class LockGuard(private val service: AccessibilityService) {
         val h = total / 3600
         val m = (total % 3600) / 60
         val s = total % 60
-        countdown?.text = String.format(java.util.Locale.US, "%02d:%02d:%02d", h, m, s)
+        // 注意：Kotlin 不允许把赋值目标写成安全调用（`a?.b = c` 是编译错误），
+        // 必须用 let 包一层。上一版就是这么炸的。
+        val formatted = String.format(java.util.Locale.US, "%02d:%02d:%02d", h, m, s)
+        countdown?.let { it.text = formatted }
         val why = lockReason()
-        reasonView?.text = if (why.isNotBlank()) why else ""
+        reasonView?.let { it.text = if (why.isNotBlank()) why else "" }
     }
 
     fun shutdown() {
