@@ -2337,6 +2337,42 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         fun getIntentOutcome(intentId: String): String =
             IntentStore.outcomeOf(this@MainActivity, intentId)
 
+        // ── 起床叫醒（1.0.38）────
+        //
+        // 几点起由角色和用户商量决定，所以是「一次性计划」而不是每日固定值。
+        // 声音必须提前合成存本地：早上网页被冻结，没法临时调 Minimax。
+
+        /** 网页下发叫醒计划（整份覆盖）。 */
+        @JavascriptInterface
+        fun syncWakeupPlans(json: String): Boolean =
+            WakeupScheduler.syncPlans(this@MainActivity, json)
+
+        /** 排一次叫醒。atMs 是起床那一刻。 */
+        @JavascriptInterface
+        fun scheduleWakeup(planId: String, atMs: Long): Boolean =
+            WakeupScheduler.schedule(this@MainActivity, planId, atMs)
+
+        /** 取消一次叫醒（用户手动停、或计划被删）。 */
+        @JavascriptInterface
+        fun cancelWakeup(planId: String): Boolean =
+            WakeupScheduler.cancel(this@MainActivity, planId)
+
+        /** 立刻停掉正在响的叫醒（面板上的「别响了」）。 */
+        @JavascriptInterface
+        fun stopWakeupRinging(): Boolean = runCatching {
+            WakeUpPlayer.stop(this@MainActivity)
+            true
+        }.getOrDefault(false)
+
+        /** 现在是不是正在响（面板显示用）。 */
+        @JavascriptInterface
+        fun getWakeupStatus(): String = WakeUpPlayer.statusJson().toString()
+
+        /** 读某次叫醒的原生结果：响了没、几轮、是不是自己起来的。 */
+        @JavascriptInterface
+        fun getWakeupOutcome(planId: String): String =
+            WakeupScheduler.outcomeOf(this@MainActivity, planId)
+
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，
         // 但不接受「往我日历里写东西」。两个权限独立授予，所以状态也独立。

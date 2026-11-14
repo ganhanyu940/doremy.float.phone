@@ -202,6 +202,23 @@
             android:name=".IntentAlarmReceiver"
             android:exported="false" />
 
+        <!-- 起床叫醒（1.0.38）。早上 App 在后台被冻结，声音必须由原生播：
+             提前合成好的角色语音、系统闹铃音、振动都在这里起。 -->
+        <receiver
+            android:name=".WakeupAlarmReceiver"
+            android:exported="false" />
+
+        <!-- 叫醒通知上的「我起来了」按钮。exported=true 是必需的：
+             通知栏的 PendingIntent 在系统进程里执行，非 exported 收不到。
+             只认 ACTION_DONE，且只做"停止发声"这一件事，无其他副作用。 -->
+        <receiver
+            android:name=".WakeupActionReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="app.floatphone.shell.WAKEUP_DONE" />
+            </intent-filter>
+        </receiver>
+
         <!-- 通话浮窗服务：TYPE_APPLICATION_OVERLAY 浮在其他 App 上层。
              mediaPlayback 类型同时把进程钉在前台，网页语音才不会被系统掐断。 -->
         <service
