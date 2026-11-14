@@ -25,7 +25,8 @@ import { executeCustomAppToolCall } from "./custom-app-tool-runtime";
 import { executeLifeToolCall } from "./life/life-tools";
 import { appendLifeTimelineEntry, loadVirtualLifeState, saveVirtualLifeState } from "./life/life-storage";
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
-import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
+import { describePhoneLockStatus, runCharacterLock, runCharacterUnlock } from "./device-lock";
 import { createPhotoWallId, loadPhotoWallState, savePhotoWallState, type PhotoWallDoodle, type PhotoWallCreationRecord, type PhotoWallPhoto } from "./photo-wall-storage";
 import { generateImageFromConfiguredApi } from "./image-generation-service";
 import {
@@ -881,6 +882,8 @@ async function executeInternalTool(call: ToolCall, context?: ToolExecutionContex
     if (call.name === "写入系统日历") return executeSystemCalendarWriteTool(call);
     if (call.name === "在桌面留句话") return executePhoneWidgetTool(call, context);
     if (call.name === "请求看屏幕") return executeCheckInRequestTool(call, context);
+    // 同样必须排在现实桥之前：用户完全可能把自己的快捷动作命名成「锁住手机」。
+    if (call.name === "锁住手机") return executeDeviceLockTool(call, context);
     if (isRealityBridgeToolName(call.name)) return executeRealityBridgeTool(call, context);
     if (call.name === "稍后主动联系" || call.name === "设置定时醒来") return executeTimedWakeTool(call, context);
 
@@ -1220,6 +1223,95 @@ async function executeSystemCalendarWriteTool(call: ToolCall): Promise<ToolResul
         success: true,
         data: `已写进 TA 的系统日历：${whenText}「${title}」，到点系统会提醒 TA。`,
         userNotice: `已把「${title}」记进 TA 的日历`,
+    };
+}
+
+/**
+ * 角色锁机：把用户真实手机锁上一段时间，或提前解开。
+ *
+ * 门控在 lib/device-lock/engine 里（用户授权 + 壳能力 + 无障碍），
+ * 这里只做三件事：确认能力开关、拿角色名、把结论翻成给角色看的话。
+ *
+ * 为什么每次都要重新确认「用户开没开」：用户随时可能在设置里关掉这个开关，
+ * 而模型的上下文还停留在上一次的系统提示里。不现读就会继续锁人。
+ */
+async function executeDeviceLockTool(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
+    const capability = getInternalCapability(DEVICE_LOCK_CAPABILITY_ID);
+    if (!capability || !capability.enabled || capability.mode === "off") {
+        return {
+            name: call.name,
+            success: false,
+            error: "「锁住手机」能力未启用（设置 → 角色管我）",
+            continueConversation: false,
+            persistToHistory: false,
+            userNotice: "锁住手机能力未启用",
+        };
+    }
+
+    const op = cleanToolString(call.args?.action, 20).toLowerCase();
+    const characterName = context?.characterId ? getCurrentCharacter(context.characterId).name : "";
+
+    if (op === "status" || op === "查看" || op === "") {
+        return {
+            name: call.name,
+            success: true,
+            data: describePhoneLockStatus(),
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: "看了看锁机状态",
+        };
+    }
+
+    if (op === "lock" || op === "锁" || op === "锁上") {
+        const outcome = runCharacterLock(call.args?.minutes, call.args?.reason, characterName);
+        if (!outcome.ok) {
+            return {
+                name: call.name,
+                success: false,
+                error: outcome.reason || "锁机失败",
+                continueConversation: true,
+                persistToHistory: false,
+                userNotice: "没能锁上手机",
+            };
+        }
+        return {
+            name: call.name,
+            success: true,
+            data: outcome.message || "已锁定手机",
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: outcome.message || "已锁定手机",
+        };
+    }
+
+    if (op === "unlock" || op === "解" || op === "解锁") {
+        const outcome = runCharacterUnlock(call.args?.reason, characterName);
+        if (!outcome.ok) {
+            return {
+                name: call.name,
+                success: false,
+                error: outcome.reason || "解锁失败",
+                continueConversation: true,
+                persistToHistory: false,
+                userNotice: "没能解锁",
+            };
+        }
+        return {
+            name: call.name,
+            success: true,
+            data: outcome.message || "已解锁",
+            continueConversation: true,
+            persistToHistory: false,
+            userNotice: outcome.message || "已解锁",
+        };
+    }
+
+    return {
+        name: call.name,
+        success: false,
+        error: "action 只能是 lock / unlock / status",
+        continueConversation: true,
+        persistToHistory: false,
     };
 }
 

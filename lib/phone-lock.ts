@@ -45,6 +45,17 @@ type NativeLockBridge = {
   getLockGuardStatus?: () => string;
   listLaunchableApps?: () => string;
   openApp?: (packageName: string) => string;
+  /**
+   * 通用系统设置跳转（壳里一直是这个方法）。
+   * which = write_settings / dnd / accessibility / battery / app_details 等。
+   * 跳无障碍列表就用 openSystemSettings("accessibility")。
+   */
+  openSystemSettings?: (which: string) => boolean;
+  /**
+   * 专用无障碍跳转。
+   * 注意：1.0.34 及以前的壳**没有**实现它，是可选的新增能力，
+   * 调用方必须先退回 openSystemSettings("accessibility")。
+   */
   openAccessibilitySettings?: () => boolean;
 };
 
@@ -182,16 +193,32 @@ export function listLaunchableApps(): LaunchableApp[] {
  * 锁机强依赖无障碍服务，而各家 ROM 把入口藏得深浅不一，让用户自己找是折磨。
  */
 export function openAccessibilitySettings(): boolean {
-  const native = bridge();
-  if (!native?.openAccessibilitySettings) {
-    // 老版本桥没有这个方法时退回通用入口（部分 ROM 会落到无障碍列表）
-    const shell = (window as unknown as { AndroidShell?: { openAccessibilitySettings?: () => void } }).AndroidShell;
-    if (shell?.openAccessibilitySettings) {
-      try { shell.openAccessibilitySettings(); return true; } catch { return false; }
-    }
-    return false;
+  const shell = (window as unknown as {
+    AndroidShell?: {
+      openAccessibilitySettings?: () => boolean | void;
+      /** 设备动作桥已有的通用跳转（which=accessibility 就是无障碍列表）。 */
+      openSystemSettings?: (which: string) => boolean;
+    };
+  }).AndroidShell;
+  if (!shell) return false;
+
+  // 顺序很重要：**先**用老的通用跳转，再试专用方法。
+  //
+  // 原因：1.0.34 及以前的壳里从来没有 openAccessibilitySettings 这个桥方法，
+  // 只有 openSystemSettings(which)。早先这里先判断专用方法、不存在就直接
+  // 返回 false，于是锁机台上那个「去开启无障碍」按钮在真机上**永远点不动**，
+  // 用户只能自己去系统设置里一层层翻。
+  // 改成先走 openSystemSettings("accessibility")：当前所有在用的 APK 都能用，
+  // 不需要为了一个跳转重新打包。
+  if (typeof shell.openSystemSettings === "function") {
+    try {
+      if (shell.openSystemSettings("accessibility") === true) return true;
+    } catch { /* 继续尝试下面那条 */ }
   }
-  try { return native.openAccessibilitySettings() === true; } catch { return false; }
+  if (typeof shell.openAccessibilitySettings === "function") {
+    try { return shell.openAccessibilitySettings() !== false; } catch { return false; }
+  }
+  return false;
 }
 
 /** 打开一个应用（锁机后"自动拉起学习软件"用它）。 */

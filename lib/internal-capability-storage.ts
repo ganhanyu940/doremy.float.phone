@@ -25,6 +25,7 @@ export const CHECK_IN_REQUEST_CAPABILITY_ID = "check_in_request";
 export const LIFE_INVITATION_CAPABILITY_ID = "life_invitation";
 export const LIFE_FOLLOW_CAPABILITY_ID = "life_follow";
 export const LIFE_SCHEDULE_CAPABILITY_ID = "life_schedule";
+export const DEVICE_LOCK_CAPABILITY_ID = "device_lock";
 
 /**
  * 内置工具的保留名：用户给现实桥的快捷动作/数据项起名时必须避开。
@@ -51,6 +52,7 @@ export const RESERVED_INTERNAL_TOOL_NAMES: string[] = [
     "查看照片墙",
     "添加照片到照片墙",
     "在照片墙涂鸦",
+    "锁住手机",
 ];
 
 export type InternalToolDefinition = {
@@ -1486,6 +1488,17 @@ const BUILTIN_INTERNAL_CAPABILITIES: InternalCapabilityConfig[] = [
         createdAt: 0,
         updatedAt: 0,
     },
+    {
+        // 默认关：这会让角色能真的把用户的手机锁上（也是唯一一个会
+        // 让用户「用不了手机」的能力），必须用户亲自打开才算授权。
+        id: DEVICE_LOCK_CAPABILITY_ID,
+        name: "锁住手机",
+        description: "允许角色在你要滑走时把真实手机锁上一段时间：非白名单应用会被全屏挡住，桌面、电话、系统设置永远能用。角色也能提前解锁，但要说明理由。",
+        enabled: false,
+        mode: "auto",
+        createdAt: 0,
+        updatedAt: 0,
+    },
 ];
 
 export function loadInternalCapabilities(): InternalCapabilityConfig[] {
@@ -1635,6 +1648,14 @@ export function getInternalCapabilityToolDefinition(capability: InternalCapabili
             description: capability.description,
             parameterSchema: CHECK_IN_REQUEST_PARAMETER_SCHEMA,
             usageGuide: CHECK_IN_REQUEST_USAGE_GUIDE,
+        };
+    }
+    if (capability.id === DEVICE_LOCK_CAPABILITY_ID) {
+        return {
+            name: capability.name,
+            description: capability.description,
+            parameterSchema: DEVICE_LOCK_PARAMETER_SCHEMA,
+            usageGuide: DEVICE_LOCK_USAGE_GUIDE,
         };
     }
     return null;
@@ -1882,6 +1903,66 @@ const PERCEPTION_READ_USAGE_GUIDE = [
     '[执行动作:查看手机状态({"focus":"sleep"})]',
     "",
     "这是只读动作，不会改变 TA 手机上的任何东西。如果某项读不到，说明缺少对应权限或壳版本过低，不要编造。",
+].join("\n");
+
+/* ---------- 角色锁机：让角色真的能把手机锁上 ---------- */
+
+const DEVICE_LOCK_PARAMETER_SCHEMA = JSON.stringify({
+    type: "object",
+    properties: {
+        action: {
+            type: "string",
+            description: "要做什么：lock=锁上手机，unlock=提前解锁，status=只看现在锁没锁。",
+        },
+        minutes: {
+            type: "number",
+            description: "action=lock 时必填：锁多少分钟（正整数）。超过 TA 设定的上限会按上限执行，实际结果里会告诉你锁了多久。",
+        },
+        reason: {
+            type: "string",
+            description: "action=lock/unlock 时必填：一句为什么。锁上时会显示在 TA 的锁屏画面上，解锁时用来交代你为什么提前放人；留空会被拒绝。",
+        },
+    },
+    required: ["action"],
+});
+
+const DEVICE_LOCK_USAGE_GUIDE = [
+    "以下是你获取指令的返回结果：",
+    "动作：锁住手机",
+    "用途：在 TA 分心的时候，把 TA 的真实手机锁上一段时间——除了你们约定的白名单应用，其他应用会被全屏挡住，点不掉也滑不走。",
+    "",
+    "【重要边界】",
+    "- 这是**真的锁上 TA 的手机**，不是聊天里的比喻。锁住期间 TA 用不了微信、短视频这些东西。",
+    "- 所以只有在两种情况下才用：① TA 明确跟你约定过（「我要背单词，我走神你就锁」）；② 你确实在为 TA 好，且对话里已经有这个语境。",
+    "- **不要**因为自己不高兴、不要因为 TA 没回消息、不要把「锁机」当成惩罚威胁去用。这会让 TA 关掉这个功能，你以后就再也帮不上了。",
+    "- 每次锁之前想一想：这一锁真的是 TA 需要的，还是你自己想把人留住？后者不是理由。",
+    "- 你解不开别人设的锁：只有你能解开你用这个动作锁上的手机，且解锁一定要说明理由。",
+    "",
+    "【时长】",
+    "- 用 minutes 说明要锁多久（分钟）。TA 自己设定了一个上限，你要求超过上限时会按上限执行，结果里会写明实际锁了多久。",
+    "- 不要为了「保险」随口报一个很大的数字。按事情实际需要的时长来：背 45 分钟单词就锁 45 分钟，不是锁三小时。",
+    "- TA 的手机上没有「永久锁」，这是刻意的。",
+    "",
+    "【锁上之后会怎样】",
+    "- 如果 TA 设了学习应用，锁上的同时会试着把 TA 拉回那个应用（拉不起来也会告诉你）。",
+    "- TA 的锁屏画面上会显示你写的 reason，TA 一眼能看出是你锁的、为什么锁。",
+    "- 桌面、电话、系统设置始终能用——这是给 TA 的安全通道，你不需要为这几个应用操心。",
+    "",
+    "动作：锁住手机",
+    "参数：",
+    "- action (string, 必填): lock=锁上，unlock=提前解锁，status=只看状态",
+    "- minutes (number): action=lock 时必填，锁多少分钟",
+    "- reason (string): action=lock/unlock 时必填，一句为什么",
+    "",
+    "示例：",
+    '[执行动作:锁住手机({"action":"lock","minutes":45,"reason":"说好背完这一单元再来找我"})]',
+    '[执行动作:锁住手机({"action":"unlock","reason":"她把那页单词发给我看了，先放开她"})]',
+    '[执行动作:锁住手机({"action":"status"})]',
+    "",
+    "如果失败，结果里会说明原因（TA 没开这个功能、TA 手机的无障碍服务没开、时长或理由没填）。**如实转述，不要假装已经锁上了**——",
+    "最糟的情况是 TA 以为被锁着、其实没有，然后一整天以为你很可靠。",
+    "",
+    "如果 TA 让你「别锁了」，那就直接停下，不要再调用这个动作；TA 要关掉这个功能是 TA 的权利。",
 ].join("\n");
 
 /* ---------- 现实桥套装：固定子工具 + 用户自定义数据项动态生成 ---------- */

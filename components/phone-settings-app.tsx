@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, createContext, type CSSProperties, type ReactNode } from "react";
-import { Activity, AlertTriangle, CalendarDays, Camera, Check, ChevronRight, Clock, Database, FileText, Fingerprint, Globe, HardDrive, Image, Info, KeyRound, Laptop, Layers, LayoutTemplate, Link2, Loader2, LogOut, MessageSquare, Mic, PhoneCall, SlidersHorizontal, UserCircle, Wrench, X, CloudUpload, Zap, Smartphone } from "lucide-react";
+import { Activity, AlertTriangle, CalendarDays, Camera, Check, ChevronRight, Clock, Database, FileText, Fingerprint, Globe, HardDrive, Image, Info, KeyRound, Laptop, Layers, LayoutTemplate, Link2, Loader2, Lock, LogOut, MessageSquare, Mic, PhoneCall, SlidersHorizontal, UserCircle, Wrench, X, CloudUpload, Zap, Smartphone } from "lucide-react";
 import { ConfirmDialog } from "./ui/modal";
 import { useAccount } from "@/lib/account-context";
 import { isSelfHostedModeEnabled } from "@/lib/self-hosting";
@@ -24,6 +24,7 @@ import { AgentComputerSettings } from "./settings/agent-computer-settings";
 import { CallOverlaySettings } from "./settings/call-overlay-settings";
 import { PerceptionSettings } from "./perception/perception-settings";
 import { DeviceActionSettings } from "./device-action/device-action-settings";
+import { DeviceLockSettings } from "./device-lock/device-lock-settings";
 import { SystemCalendarSettings } from "./system-calendar/system-calendar-settings";
 import { ScreenshotSettings } from "./screenshot/screenshot-settings";
 import { RuntimeDiagnostics } from "./settings/runtime-diagnostics";
@@ -70,6 +71,7 @@ type SubPage =
     | "callOverlay"
     | "perception"
     | "deviceAction"
+    | "deviceLock"
     | "systemCalendar"
     | "screenshot"
     | "widget"
@@ -93,6 +95,7 @@ const SETTINGS_MENU = [
     { id: "callOverlay", icon: PhoneCall, label: "通话浮窗外观", desc: "回复条配色", iconColor: BINDING_ACCENTS.voice , glass: "voice" },
     { id: "perception", icon: Activity, label: "感知", desc: "让角色知道电量、网络与在用应用", iconColor: BINDING_ACCENTS.memory , glass: "" },
     { id: "deviceAction", icon: Zap, label: "操作设备", desc: "让角色帮你开灯、调音量、打开应用", iconColor: BINDING_ACCENTS.voice , glass: "" },
+    { id: "deviceLock", icon: Lock, label: "角色管我", desc: "允许角色把手机锁上一段时间", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "systemCalendar", icon: CalendarDays, label: "系统日历", desc: "让角色知道你的日程、记下纪念日", iconColor: BINDING_ACCENTS.memory , glass: "" },
     { id: "screenshot", icon: Camera, label: "截屏", desc: "让角色看一眼你现在的屏幕", iconColor: BINDING_ACCENTS.voice , glass: "" },
     { id: "widget", icon: LayoutTemplate, label: "桌面小组件", desc: "角色留在桌面上的话", iconColor: BINDING_ACCENTS.memory , glass: "" },
@@ -353,6 +356,8 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                 return <PerceptionSettings onNotice={onNotice} />;
             case "deviceAction":
                 return <DeviceActionSettings onNotice={onNotice} />;
+            case "deviceLock":
+                return <DeviceLockSettings onNotice={onNotice} />;
             case "systemCalendar":
                 return <SystemCalendarSettings onNotice={onNotice} />;
             case "screenshot":
@@ -532,7 +537,7 @@ export function PhoneSettingsApp({ onClose, onNotice }: SettingsPageProps) {
                             </div>
                             <div className="mt-[10px]">
                                 <CardGrid
-                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "systemCalendar", "screenshot", "widget", "apiUsage"].includes(item.id)).map(makeCardItem)}
+                                    items={SETTINGS_MENU.filter(item => ["weixin", "toolbox", "callOverlay", "perception", "deviceAction", "deviceLock", "systemCalendar", "screenshot", "widget", "apiUsage"].includes(item.id)).map(makeCardItem)}
                                 />
                             </div>
                             <div className="mt-[10px]">
