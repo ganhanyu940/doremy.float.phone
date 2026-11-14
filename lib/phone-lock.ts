@@ -192,9 +192,15 @@ export function unlockPhone(source = "manual"): LockResult {
  */
 function notifyBedtimeUserUnlocked(source: string): void {
   if (source !== "manual" && source !== "console") return;
-  void import("./bedtime-lock/engine")
-    .then(mod => { mod.markBedtimeUnlockedByUser(); })
-    .catch(() => { /* 睡前锁没开时这里什么都不该做 */ });
+  // 用 void + catch 明确表态「这个 Promise 我有意不等」：解锁是同步接口，
+  // 等它会让锁机台点「解锁」后要等一下才响应。也可以避免 eslint 的
+  // no-floating-promises 把这里判成漏处理。
+  const task = import("./bedtime-lock/engine").then(mod => {
+    mod.markBedtimeUnlockedByUser();
+  });
+  void task.catch(() => {
+    /* 睡前锁没开或模块加载失败时什么都不该做，绝不能让客服端报错 */
+  });
 }
 
 /** 列出手机里可启动的应用（供白名单勾选）。 */

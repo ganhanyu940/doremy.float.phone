@@ -242,8 +242,13 @@ export function readChapterStudyTimes(
     const titleField = options?.titleField ?? "chapter";
     const groupField = options?.groupField ?? "unit";
     const courseField = options?.courseField ?? "course";
+    // 用 flatMap 而不是 map + filter：
+    //   · map 会产出 (ChapterStudyTime | null)[]，后面 filter 需要类型谓词才能收窄，
+    //     而谓词一旦写不准就会连锁报 TS2677 / TS2322 / TS18047；
+    //   · flatMap 里「返回 []」就等价于丢弃这一条，全程不出现 null，
+    //     元素类型天然就是 ChapterStudyTime，sort 里的 a/b 也不必再判空。
     return rows
-      .map(row => {
+      .flatMap((row): ChapterStudyTime[] => {
         const record = row as Record<string, unknown>;
         const totalSeconds = Number(record.studySeconds) || 0;
         // 按天分桶（v2.3 起考点工坊会写）。没有就是老记录，只能给累计数。
@@ -251,23 +256,26 @@ export function readChapterStudyTimes(
           ? record.studyByDate as Record<string, number>
           : {};
         const periods = periodsFromDaySeconds(byDate);
-        if (totalSeconds < 60 && periods.monthMinutes <= 0) return null; // 不到一分钟的算噪声
+        if (totalSeconds < 60 && periods.monthMinutes <= 0) return []; // 不到一分钟的算噪声
         const title = String(record[titleField] ?? "").trim();
-        if (!title) return null;
+        if (!title) return [];
         const group = String(record[groupField] ?? "").trim();
         const course = String(record[courseField] ?? "").trim();
-        return {
+        // 可选属性必须**整个键都不出现**，不能写成 `group: undefined`：
+        // strict 下 `group?: string` 与 `group: string | undefined` 不等价，
+        // 后者会让对象字面量对不上 ChapterStudyTime。
+        const item: ChapterStudyTime = {
           title,
-          group: group || undefined,
-          course: course || undefined,
           minutes: Math.round(totalSeconds / 60),
           todayMinutes: periods.todayMinutes,
           weekMinutes: periods.weekMinutes,
           monthMinutes: periods.monthMinutes,
-          lastStudiedAt: typeof record.lastStudiedAt === "string" ? record.lastStudiedAt : undefined,
         };
+        if (group) item.group = group;
+        if (course) item.course = course;
+        if (typeof record.lastStudiedAt === "string") item.lastStudiedAt = record.lastStudiedAt;
+        return [item];
       })
-      .filter((item): item is ChapterStudyTime => item !== null)
       .sort((a, b) => b.minutes - a.minutes);
   } catch {
     return [];
