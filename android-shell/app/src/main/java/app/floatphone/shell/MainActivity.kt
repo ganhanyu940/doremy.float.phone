@@ -2294,6 +2294,49 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
         fun resetBedtimeState(): Boolean =
             CallControlService.instance?.currentLockGuard()?.resetBedtimeState() ?: false
 
+        // ── 临时意图锁（1.0.38）────
+        //
+        // 「我说要去做一件事，过一会儿看看我还动不动；还在动就锁」。
+        // 定时同样必须在原生：用户说完就把手机放下/带进浴室，
+        // 那正是 App 在后台、网页被冻结的时刻，网页定时器根本不会跑。
+
+        /**
+         * 网页下发待执行的意图（整份覆盖）。
+         *
+         * 参数是 JSON 数组，每项至少含 id/title/createdAt/checkAt/lockMinutes
+         * 与 allowPackages。原生只读不改，见 IntentStore 的注释。
+         */
+        @JavascriptInterface
+        fun syncIntentRecords(json: String): Boolean =
+            IntentStore.sync(this@MainActivity, json)
+
+        /** 为某条意图排检查闹钟。 */
+        @JavascriptInterface
+        fun scheduleIntentCheck(intentId: String, checkAtMs: Long): Boolean =
+            IntentScheduler.schedule(this@MainActivity, intentId, checkAtMs)
+
+        /** 取消某条意图的闹钟（打卡完成、用户取消都要调，否则还会响）。 */
+        @JavascriptInterface
+        fun cancelIntentCheck(intentId: String): Boolean =
+            IntentScheduler.cancel(this@MainActivity, intentId)
+
+        /** 清掉所有待执行意图（关掉整个功能时）。 */
+        @JavascriptInterface
+        fun clearIntentRecords(): Boolean = runCatching {
+            IntentStore.clear(this@MainActivity)
+            true
+        }.getOrDefault(false)
+
+        /**
+         * 读某条意图的原生结算结果。
+         *
+         * 半夜/后台锁的那次，网页当时不在场，回来时靠这条知道
+         * 「到底锁了没、为什么没锁」——不然这段是黑箱。
+         */
+        @JavascriptInterface
+        fun getIntentOutcome(intentId: String): String =
+            IntentStore.outcomeOf(this@MainActivity, intentId)
+
         // ── 日历桥（读系统日程 / 写角色纪念日）────
         // 读和写分开报状态：用户可能只想让角色「知道我的安排」，
         // 但不接受「往我日历里写东西」。两个权限独立授予，所以状态也独立。

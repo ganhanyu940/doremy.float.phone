@@ -196,6 +196,12 @@
             android:name=".BedtimeAlarmReceiver"
             android:exported="false" />
 
+        <!-- 临时意图锁的检查触发点（1.0.38）。同理：用户说完「我去洗澡」
+             就把手机放下，那时 App 必然在后台，网页定时器不会跑。 -->
+        <receiver
+            android:name=".IntentAlarmReceiver"
+            android:exported="false" />
+
         <!-- 通话浮窗服务：TYPE_APPLICATION_OVERLAY 浮在其他 App 上层。
              mediaPlayback 类型同时把进程钉在前台，网页语音才不会被系统掐断。 -->
         <service
