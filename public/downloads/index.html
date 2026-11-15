@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>插件下载 · 消息收藏</title>
+<title>插件下载 · 小手机的聊天插件</title>
 <style>
   :root { --bg:#f7f6f3; --card:#fff; --ink:#1c1b1a; --sub:#8a8783; --line:#ecebe7; --accent:#7a5af8; }
   @media (prefers-color-scheme: dark) {
@@ -11,85 +11,125 @@
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100dvh; padding: 28px 20px 60px;
+    margin: 0; min-height: 100dvh; padding: 26px 18px 60px;
     background: var(--bg); color: var(--ink);
     font: 14px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
     -webkit-tap-highlight-color: transparent;
   }
-  .wrap { max-width: 520px; margin: 0 auto; }
-  h1 { font-size: 19px; margin: 0 0 6px; letter-spacing: -.2px; }
-  .sub { color: var(--sub); font-size: 12.5px; margin: 0 0 22px; }
+  .wrap { max-width: 540px; margin: 0 auto; }
+  h1 { font-size: 19px; margin: 0 0 4px; letter-spacing: -.2px; }
+  .sub { color: var(--sub); font-size: 12.5px; margin: 0 0 20px; }
   .card {
-    background: var(--card); border-radius: 16px; padding: 18px;
+    background: var(--card); border-radius: 16px; padding: 16px;
     border: 1px solid var(--line); margin-bottom: 14px;
   }
+  .card h2 { font-size: 15px; margin: 0 0 3px; }
+  .card .desc { font-size: 12px; color: var(--sub); margin: 0 0 12px; line-height: 1.6; }
+  .feat { font-size: 12px; color: var(--sub); margin: 0 0 12px; padding-left: 17px; }
+  .feat li { margin-bottom: 3px; }
   a.dl {
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    min-height: 52px; border-radius: 14px; background: var(--accent); color: #fff;
-    text-decoration: none; font-weight: 700; font-size: 15px;
+    min-height: 48px; border-radius: 12px; background: var(--accent); color: #fff;
+    text-decoration: none; font-weight: 700; font-size: 14.5px;
   }
   a.dl:active { transform: scale(.985); }
-  .filename { margin-top: 8px; font-size: 11.5px; color: var(--sub); text-align: center; }
-  ol { margin: 0; padding-left: 20px; }
-  ol li { margin-bottom: 8px; }
+  .fname { margin-top: 7px; font-size: 11px; color: var(--sub); text-align: center; }
+  ol { margin: 0; padding-left: 20px; font-size: 13px; }
+  ol li { margin-bottom: 7px; }
   code {
     background: var(--line); padding: 1px 5px; border-radius: 5px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
   }
-  .tip { font-size: 12px; color: var(--sub); margin: 10px 0 0; }
+  .tip { font-size: 11.5px; color: var(--sub); margin: 9px 0 0; line-height: 1.6; }
+  .warn { font-size: 11.5px; line-height: 1.6; padding: 9px 11px; border-radius: 10px;
+    background: rgba(224,166,60,.14); color: #9a6a08; margin: 10px 0 0; }
+  @media (prefers-color-scheme: dark) { .warn { color: #e0a63c; } }
   details { margin-top: 12px; }
-  summary { font-size: 13px; color: var(--accent); cursor: pointer; }
+  summary { font-size: 12.5px; color: var(--accent); cursor: pointer; }
   pre {
     margin: 10px 0 0; padding: 12px; border-radius: 10px; background: var(--bg);
-    border: 1px solid var(--line); max-height: 320px; overflow: auto;
+    border: 1px solid var(--line); max-height: 300px; overflow: auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 10.5px; line-height: 1.5;
+    font-size: 10px; line-height: 1.5;
   }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>消息收藏 · 聊天插件</h1>
-  <p class="sub">把喜欢的、讲得好的消息收起来，随取随用。不需要改动主程序。</p>
+  <h1>小手机 · 聊天插件</h1>
+  <p class="sub">下载后导入即可用，不改主程序；卸载插件即完全移除。</p>
 
+  <!-- 真题分析台 -->
   <div class="card">
-    <a class="dl" id="dlLink" href="chat-favorites.js" download="chat-favorites.js">
-      下载插件文件
-    </a>
-    <div class="filename">chat-favorites.js</div>
-    <p class="tip" id="hint">下载后回到小手机，按下面四步安装。</p>
-  </div>
-
-  <div class="card">
-    <ol>
-      <li>打开任意一个聊天 → 右上角设置 →「扩展插件」</li>
-      <li>点「导入插件」，在文件里选刚下载的 <code>chat-favorites.js</code></li>
-      <li>弹出风险确认点「确定」——这是本插件，代码可查</li>
-      <li>回到聊天：气泡下方出现「☆ 收藏」，顶栏出现「收藏」入口</li>
-    </ol>
-    <p class="tip">如果下载按钮直接打开了代码页而不是保存文件：点浏览器菜单 →「下载」或「保存页面」即可。</p>
-  </div>
-
-  <div class="card">
+    <h2>📄 真题分析台</h2>
+    <p class="desc">单独界面分析真题，不占聊天历史，结论可接进当前会话。</p>
+    <ul class="feat">
+      <li>粘贴或从 PDF 提取文字，一次性分析</li>
+      <li>自动分档：必背 / 掌握 / 了解</li>
+      <li>给出薄弱点推断 + 未来 7 天安排</li>
+      <li>结论按 token 预算接进聊天，用完可摘掉</li>
+      <li>不占聊天历史，不会越聊越贵</li>
+    </ul>
+    <a class="dl" href="exam-lab.js" download="exam-lab.js">下载 真题分析台</a>
+    <div class="fname">exam-lab.js</div>
+    <div class="warn">
+      PDF 自动提取需要从网络加载解析库，可能被站点安全策略拦截。
+      失败也没关系——在阅读器里长按全选复制，粘进去效果一样。
+      扫描件（图片型 PDF）提不出文字，请用手机相册的「提取文字」。
+    </div>
     <details>
-      <summary>不想下载文件？展开复制源码，手动另存为 .js</summary>
-      <pre id="src">加载中…</pre>
-      <p class="tip">复制上面全部内容，存成 <code>chat-favorites.js</code>（UTF-8），同样可以导入。</p>
+      <summary>不想下载文件？展开复制源码</summary>
+      <pre data-src="exam-lab.js">加载中…</pre>
     </details>
+  </div>
+
+  <!-- 消息收藏 -->
+  <div class="card">
+    <h2>⭐ 消息收藏</h2>
+    <p class="desc">把喜欢的、讲得好的消息收起来，能搜、能复制、能导出。</p>
+    <ul class="feat">
+      <li>气泡下方点 ☆ 收藏，顶栏看收藏夹</li>
+      <li>按内容或名字搜索</li>
+      <li>单条复制 / 删除 / 复制全部</li>
+      <li>收藏不写进聊天记录，AI 看不到</li>
+    </ul>
+    <a class="dl" href="chat-favorites.js" download="chat-favorites.js">下载 消息收藏</a>
+    <div class="fname">chat-favorites.js</div>
+    <details>
+      <summary>不想下载文件？展开复制源码</summary>
+      <pre data-src="chat-favorites.js">加载中…</pre>
+    </details>
+  </div>
+
+  <!-- 安装说明 -->
+  <div class="card">
+    <h2>怎么装（两个插件一样）</h2>
+    <ol>
+      <li>下载上面的 <code>.js</code> 文件；</li>
+      <li>小手机 → 任意聊天 → 右上角设置 →「扩展插件」；</li>
+      <li>点「导入插件」，选中下载的 <code>.js</code>；</li>
+      <li>弹出风险确认点「确定」（插件会和应用同权限，只装你信任的）；</li>
+      <li>回到聊天，顶栏就会出现对应入口。</li>
+    </ol>
+    <p class="tip">
+      如果下载按钮直接打开了代码页而不是保存文件：点浏览器菜单 →「下载」或「保存页面」。
+    </p>
   </div>
 </div>
 
 <script>
-  // 展开源码时再取，避免一进页面就白拉一遍文件
-  var loaded = false;
-  document.querySelector("details").addEventListener("toggle", function (e) {
-    if (!e.target.open || loaded) return;
-    loaded = true;
-    var box = document.getElementById("src");
-    fetch("chat-favorites.js")
-      .then(function (r) { return r.text(); })
-      .then(function (t) { box.textContent = t; })
-      .catch(function () { box.textContent = "取源码失败，直接用上面的下载按钮。"; });
+  // 展开某个 details 时才去取对应源码，避免一进页面拉两个文件
+  document.querySelectorAll("details").forEach(function (d) {
+    d.addEventListener("toggle", function () {
+      if (!d.open) return;
+      var box = d.querySelector("pre[data-src]");
+      if (!box || box.dataset.loaded === "1") return;
+      box.dataset.loaded = "1";
+      fetch(box.getAttribute("data-src"))
+        .then(function (r) { return r.text(); })
+        .then(function (t) { box.textContent = t; })
+        .catch(function () { box.textContent = "取源码失败，直接用上面的下载按钮。"; });
+    });
   });
 </script>
 </body>
