@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>插件下载 · 消息收藏</title>
+<style>
+  :root { --bg:#f7f6f3; --card:#fff; --ink:#1c1b1a; --sub:#8a8783; --line:#ecebe7; --accent:#7a5af8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#131313; --card:#1e1e20; --ink:#f0efed; --sub:#8e8b87; --line:#2c2c2f; --accent:#9b82ff; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100dvh; padding: 28px 20px 60px;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 19px; margin: 0 0 6px; letter-spacing: -.2px; }
+  .sub { color: var(--sub); font-size: 12.5px; margin: 0 0 22px; }
+  .card {
+    background: var(--card); border-radius: 16px; padding: 18px;
+    border: 1px solid var(--line); margin-bottom: 14px;
+  }
+  a.dl {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: 52px; border-radius: 14px; background: var(--accent); color: #fff;
+    text-decoration: none; font-weight: 700; font-size: 15px;
+  }
+  a.dl:active { transform: scale(.985); }
+  .filename { margin-top: 8px; font-size: 11.5px; color: var(--sub); text-align: center; }
+  ol { margin: 0; padding-left: 20px; }
+  ol li { margin-bottom: 8px; }
+  code {
+    background: var(--line); padding: 1px 5px; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  }
+  .tip { font-size: 12px; color: var(--sub); margin: 10px 0 0; }
+  details { margin-top: 12px; }
+  summary { font-size: 13px; color: var(--accent); cursor: pointer; }
+  pre {
+    margin: 10px 0 0; padding: 12px; border-radius: 10px; background: var(--bg);
+    border: 1px solid var(--line); max-height: 320px; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>消息收藏 · 聊天插件</h1>
+  <p class="sub">把喜欢的、讲得好的消息收起来，随取随用。不需要改动主程序。</p>
+
+  <div class="card">
+    <a class="dl" id="dlLink" href="chat-favorites.js" download="chat-favorites.js">
+      下载插件文件
+    </a>
+    <div class="filename">chat-favorites.js</div>
+    <p class="tip" id="hint">下载后回到小手机，按下面四步安装。</p>
+  </div>
+
+  <div class="card">
+    <ol>
+      <li>打开任意一个聊天 → 右上角设置 →「扩展插件」</li>
+      <li>点「导入插件」，在文件里选刚下载的 <code>chat-favorites.js</code></li>
+      <li>弹出风险确认点「确定」——这是本插件，代码可查</li>
+      <li>回到聊天：气泡下方出现「☆ 收藏」，顶栏出现「收藏」入口</li>
+    </ol>
+    <p class="tip">如果下载按钮直接打开了代码页而不是保存文件：点浏览器菜单 →「下载」或「保存页面」即可。</p>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>不想下载文件？展开复制源码，手动另存为 .js</summary>
+      <pre id="src">加载中…</pre>
+      <p class="tip">复制上面全部内容，存成 <code>chat-favorites.js</code>（UTF-8），同样可以导入。</p>
+    </details>
+  </div>
+</div>
+
+<script>
+  // 展开源码时再取，避免一进页面就白拉一遍文件
+  var loaded = false;
+  document.querySelector("details").addEventListener("toggle", function (e) {
+    if (!e.target.open || loaded) return;
+    loaded = true;
+    var box = document.getElementById("src");
+    fetch("chat-favorites.js")
+      .then(function (r) { return r.text(); })
+      .then(function (t) { box.textContent = t; })
+      .catch(function () { box.textContent = "取源码失败，直接用上面的下载按钮。"; });
+  });
+</script>
+</body>
+</html>
