@@ -66,8 +66,15 @@ android {
         //         还在动就锁」——IntentScheduler 用 AlarmManager 排一次性检查，
         //         IntentAlarmReceiver 在原生直接读 UsageEvents 判断并执行锁定。
         //         同样必须在原生：用户说完就把手机放下，那时网页已被冻结。
-        versionCode 37
-        versionName "1.0.38"
+        // 1.0.39：起床叫醒。「和角色商量几点起，到点响铃 + 振动 + 念一句角色的话」。
+        //         音频必须睡前提前合成（早上 App 被冻结，网页发不出请求），
+        //         播放由 WakeUpPlayer 在原生做；没反应隔几分钟再响，最多 maxRounds 轮。
+        //         同时补上健康系统统一面板（设置 → 健康系统）。
+        //         **versionCode 必须严格递增**：同号或回退，Android 会拒绝覆盖安装，
+        //         安装器只报「应用未安装」，不说是版本号的问题——前面几次手动装的包
+        //         装不上就是这个原因，不是签名变了。
+        versionCode 38
+        versionName "1.0.39"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 
