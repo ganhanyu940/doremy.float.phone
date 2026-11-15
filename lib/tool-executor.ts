@@ -27,8 +27,9 @@ import { appendLifeTimelineEntry, loadVirtualLifeState, saveVirtualLifeState } f
 import { characterWorkspace, agentComputerRequest, isAgentComputerConfigured } from "./agent-computer";
 import { AGENT_COMPUTER_CAPABILITY_ID, CHECK_IN_REQUEST_CAPABILITY_ID, CALENDAR_MANAGEMENT_CAPABILITY_ID, DEVICE_ACTION_CAPABILITY_ID, DEVICE_LOCK_CAPABILITY_ID, PHONE_CHECK_CAPABILITY_ID, STUDY_CONTRACT_CAPABILITY_ID, LOCAL_DATA_LIBRARY_CAPABILITY_ID, MEMORY_WRITE_CAPABILITY_ID, MUSIC_CONTROL_CAPABILITY_ID, NOTE_WALL_CAPABILITY_ID, PHOTO_WALL_CAPABILITY_ID, PERCEPTION_READ_CAPABILITY_ID, PHONE_WIDGET_CAPABILITY_ID, REALITY_BRIDGE_CAPABILITY_ID, SEND_FILE_CAPABILITY_ID, SYSTEM_CALENDAR_CAPABILITY_ID, TIMED_WAKE_CAPABILITY_ID, TOOLBOX_MANAGEMENT_CAPABILITY_ID, getInternalCapability } from "./internal-capability-storage";
 import { describePhoneLockStatus, runCharacterLock, runCharacterUnlock } from "./device-lock";
-import { createIntent, describeOpenIntentsForCharacter, syncIntentsToNative } from "./intent-lock";
-import { scheduleWakeup, describeWakeupForCharacter } from "./wakeup";
+// 意图锁与起床叫醒的实现都在 lib/discipline/tools.ts 里，这里只转调。
+// 不要再从这里直接引 intent-lock / wakeup 的成员：早先内联实现的版本留下过
+// 五个用不到的导入，在 --max-warnings 卡死的 lint 里会直接把 CI 顶红。
 import { executeIntentLockTool, executeWakeupCallTool } from "./discipline/tools";
 import {
     buildPhoneCheckReport,

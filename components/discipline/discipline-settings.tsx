@@ -82,7 +82,8 @@ export function DisciplineSettings({ onNotice }: { onNotice?: (msg: string) => v
   const [wakeConfig, setWakeConfig] = useState<WakeupConfig>(() => loadWakeupConfig());
   const [records, setRecords] = useState<IntentRecord[]>(() => loadIntentRecords());
   const [plans, setPlans] = useState<WakeupPlan[]>(() => loadWakeupPlans());
-  const [tick, setTick] = useState(0);
+  // 只用来每 30 秒逼一次重算（让「还剩几分钟」跟着走），值本身不读。
+  const [, setTick] = useState(0);
 
   // 手动加一条意图用的输入
   const [newTitle, setNewTitle] = useState("");
@@ -146,7 +147,6 @@ export function DisciplineSettings({ onNotice }: { onNotice?: (msg: string) => v
   const readiness = checkWakeupReadiness();
   const nextPlan = nextWakeupPlan();
   const ringing = isWakeupRinging();
-  void tick; // 仅用于每 30 秒触发一次重算
 
   const handleAddIntent = () => {
     const result = createIntent({
