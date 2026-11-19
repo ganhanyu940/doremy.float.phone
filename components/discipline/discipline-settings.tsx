@@ -31,7 +31,7 @@ import {
   type IntentRecord,
 } from "@/lib/intent-lock";
 import {
-  cancelWakeupNative,
+  cancelWakeupPlan,
   checkWakeupReadiness,
   isWakeupRinging,
   loadWakeupConfig,
@@ -608,7 +608,7 @@ export function DisciplineSettings({ onNotice }: { onNotice?: (msg: string) => v
                       className="ui-btn ui-btn-outline"
                       style={{ fontSize: 12, padding: "6px 10px" }}
                       onClick={() => {
-                        cancelWakeupNative(nextPlan.id);
+                        cancelWakeupPlan(nextPlan.id);
                         onNotice?.("已取消这次叫醒");
                         refresh();
                       }}

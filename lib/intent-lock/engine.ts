@@ -35,6 +35,10 @@ import { unlockPhone, getPhoneLockStatus, lockPhoneFor } from "../phone-lock";
 import { loadAppUsageTimeline, supportsUsageTimeline } from "../perception/bridge";
 import { loadInnerAppSpans } from "../phone-check";
 import {
+  cancelIntentCheckNative,
+  readIntentOutcomeNative,
+} from "./native-bridge";
+import {
   loadIntentLockConfig,
   loadIntentRecords,
   saveIntentRecords,
@@ -79,7 +83,11 @@ export function checkIntentActivity(
   // 内部应用切换点只读一次：循环里逐段读会反复扫同一份存储。
   const innerSpans = loadInnerAppSpans();
   const from = record.createdAt;
-  const to = now;
+  // 只检查宽限期窗口 [createdAt, checkAt] 内有没有放下手机，
+  // 避免用户真去做完事、半小时后回来拿起手机时被回前台兜底误判成"一直在玩"。
+  const to = record.checkAt > record.createdAt
+    ? Math.min(now, record.checkAt + 60_000)
+    : now;
 
   let usedSeconds = 0;
   let allowedCount = 0;
@@ -162,6 +170,25 @@ export type SettleOutcome = {
 export function settleIntent(record: IntentRecord, now = Date.now()): SettleOutcome | null {
   if (record.status !== "pending") return null;
   if (record.checkAt > now) return null;
+
+  // 若原生闹钟在后台已经结算过这条意图，直接采纳原生结论，不再用当前时间重复判定
+  const nativeOutcome = readIntentOutcomeNative(record.id).trim();
+  if (nativeOutcome) {
+    const nativeLocked = nativeOutcome.includes("已锁") || nativeOutcome.includes("照样锁");
+    const nativeSkipped = nativeOutcome.includes("不锁");
+    const nextStatus: IntentRecord["status"] = nativeLocked
+      ? "locked"
+      : nativeSkipped
+        ? "skipped"
+        : "failed";
+    const updated = updateRecord(record.id, {
+      status: nextStatus,
+      note: nativeOutcome,
+    });
+    return updated
+      ? { record: updated, locked: nativeLocked, message: `「${record.title}」——${nativeOutcome}` }
+      : null;
+  }
 
   const config = loadIntentLockConfig();
 
@@ -265,6 +292,7 @@ export function markIntentDone(id: string, now = Date.now()): { ok: boolean; mes
     }
   }
 
+  cancelIntentCheckNative(id);
   updateRecord(id, {
     status: "done",
     doneAt: now,
@@ -288,6 +316,7 @@ export function cancelIntent(id: string, now = Date.now()): { ok: boolean; messa
     // 已经被锁着了再取消：解开，但如实记成「取消」而不是「完成」。
     unlockPhone("manual");
   }
+  cancelIntentCheckNative(id);
   updateRecord(id, {
     status: "cancelled",
     note: "计划有变，取消了",

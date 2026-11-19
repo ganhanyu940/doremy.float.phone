@@ -186,9 +186,9 @@ export function evaluateBedtimeLock(config: BedtimeLockConfig, now = Date.now())
   const active = hasRecentActivity(config.idleGraceMinutes, now);
   if (active === true) {
     return {
-      shouldLock: false,
-      reason: `你 ${config.idleGraceMinutes} 分钟内还在用手机，先不锁（真在用就不拦第一次，只是到点提醒）`,
-      lockUntilMs: 0,
+      shouldLock: true,
+      reason: `到了该睡的时间，最近 ${config.idleGraceMinutes} 分钟内你还在用手机，已按设置锁到起床时间`,
+      lockUntilMs: window.lockUntilMs,
       inWindow: true,
     };
   }
@@ -234,6 +234,8 @@ export function syncBedtimeToNative(config?: BedtimeLockConfig): boolean {
       endHour: cfg.endHour,
       endMinute: cfg.endMinute,
       reason: cfg.reason,
+      idleGraceMinutes: cfg.idleGraceMinutes,
+      lockWhenUnknown: cfg.lockWhenUnknown,
     });
   } catch {
     return false;

@@ -77,8 +77,32 @@ object IntentStore {
     fun outcomeOf(context: Context, intentId: String): String =
         prefs(context).getString("lastOutcome_$intentId", "").orEmpty()
 
-    /** 清掉所有待执行意图（用户关掉整个功能时）。 */
+    /** 清掉所有待执行意图（用户关掉整个功能时），并取消已排的检查闹钟。 */
     fun clear(context: Context) {
-        runCatching { prefs(context).edit().putString(KEY_RECORDS, "[]").apply() }
+        runCatching {
+            val raw = prefs(context).getString(KEY_RECORDS, "[]") ?: "[]"
+            val array = JSONArray(raw)
+            for (i in 0 until array.length()) {
+                val id = array.optJSONObject(i)?.optString("id").orEmpty()
+                if (id.isNotBlank()) IntentScheduler.cancel(context, id)
+            }
+            prefs(context).edit().putString(KEY_RECORDS, "[]").apply()
+        }
+    }
+
+    /** 开机后重排尚未结算的意图检查闹钟。 */
+    fun rescheduleAfterBoot(context: Context) {
+        runCatching {
+            val raw = prefs(context).getString(KEY_RECORDS, "[]") ?: "[]"
+            val array = JSONArray(raw)
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val id = item.optString("id")
+                val checkAt = item.optLong("checkAt", 0L)
+                if (id.isNotBlank() && checkAt > 0L) {
+                    IntentScheduler.schedule(context, id, checkAt)
+                }
+            }
+        }
     }
 }

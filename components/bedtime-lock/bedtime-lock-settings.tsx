@@ -277,8 +277,14 @@ export function BedtimeLockSettings({ onNotice }: { onNotice?: (msg: string) => 
                 value={config.reason}
                 placeholder={BEDTIME_FALLBACK_REASON}
                 maxLength={60}
-                onChange={e => update({ reason: e.target.value })}
-                onBlur={e => { if (!e.target.value.trim()) update({ reason: BEDTIME_FALLBACK_REASON }); }}
+                onChange={e => {
+                  const val = e.target.value;
+                  setConfig(prev => ({ ...prev, reason: val }));
+                }}
+                onBlur={e => {
+                  const trimmed = e.target.value.trim();
+                  update({ reason: trimmed || BEDTIME_FALLBACK_REASON });
+                }}
               />
               <div className="per-note" style={{ padding: 0 }}>
                 这句会显示在锁机画面上。写具体一点比写「该睡觉了」有用——

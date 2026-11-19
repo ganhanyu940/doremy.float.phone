@@ -239,6 +239,43 @@ class LockGuard(private val service: AccessibilityService) {
             val emergency = Intent(Intent.ACTION_CALL_BUTTON)
             service.packageManager.resolveActivity(emergency, 0)?.activityInfo?.packageName?.let { result.add(it) }
         }
+        // 输入法（IME）必须永远放行：打字时软键盘、候选词条、剪贴板浮层会触发
+        // TYPE_WINDOW_STATE_CHANGED（包名为搜狗/百度/微信输入法/Gboard 等）。
+        // 若不放行，锁机期间一旦打字就会盖上遮罩顶掉键盘、键盘收起又拆遮罩，造成打字闪屏。
+        result.addAll(inputMethodPackages())
+        return result
+    }
+
+    /** 系统已安装/启用的输入法包名集合（带 30 秒缓存，避免每次按键查系统服务）。 */
+    private var imeCache: Set<String>? = null
+    private var imeCacheAt: Long = 0L
+
+    fun isInputMethodPackage(pkg: String): Boolean {
+        if (pkg.isBlank()) return false
+        return pkg in inputMethodPackages()
+    }
+
+    private fun inputMethodPackages(): Set<String> {
+        val now = System.currentTimeMillis()
+        val cached = imeCache
+        if (cached != null && now - imeCacheAt < 30_000L) return cached
+        val result = mutableSetOf<String>()
+        runCatching {
+            val imm = service.getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.inputMethodList?.forEach { info ->
+                info.packageName?.takeIf { it.isNotBlank() }?.let { result.add(it) }
+            }
+            imm?.enabledInputMethodList?.forEach { info ->
+                info.packageName?.takeIf { it.isNotBlank() }?.let { result.add(it) }
+            }
+        }
+        runCatching {
+            val defaultIme = Settings.Secure.getString(service.contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD).orEmpty()
+            val defaultPkg = defaultIme.substringBefore('/').trim()
+            if (defaultPkg.isNotEmpty()) result.add(defaultPkg)
+        }
+        imeCache = result
+        imeCacheAt = now
         return result
     }
 
@@ -723,6 +760,22 @@ class LockGuard(private val service: AccessibilityService) {
             }
         }
 
+        // 检查最近 idleGraceMinutes 分钟内手机是否有使用活动：
+        // 没有活动说明已经放下手机入睡，不锁；读不到记录时按 lockWhenUnknown 决定。
+        val idleGraceMinutes = p.getInt("idleGraceMinutes", 10).coerceIn(1, 60)
+        val lockWhenUnknown = p.getBoolean("lockWhenUnknown", true)
+        val recentActive = hasRecentUsageActivity(idleGraceMinutes)
+        if (recentActive == false) {
+            return JSONObject()
+                .put("locked", false)
+                .put("message", "最近 ${idleGraceMinutes} 分钟没有动过手机，估计已经睡了，不锁")
+        }
+        if (recentActive == null && !lockWhenUnknown) {
+            return JSONObject()
+                .put("locked", false)
+                .put("message", "读不到你是否还在用手机（未授予使用情况访问），按设置没有锁")
+        }
+
         val reason = p.getString("reason", "").orEmpty().ifBlank { "这个点该睡了" }
         // 注意：lock() 内部会把时长夹到 MAX_LOCK_MS（8 小时）。23:00→06:30 是
         // 7.5 小时，没问题；但如果用户设成 22:00→07:00（9 小时），就会被悄悄
@@ -762,4 +815,42 @@ class LockGuard(private val service: AccessibilityService) {
             .apply()
         true
     }.getOrDefault(false)
+
+    /**
+     * 最近 graceMinutes 分钟内是否有前台应用活动。
+     * 返回 null 表示未授予「使用情况访问」或读取失败。
+     */
+    private fun hasRecentUsageActivity(graceMinutes: Int): Boolean? {
+        return try {
+            val appOps = service.getSystemService(Context.APP_OPS_SERVICE) as? android.app.AppOpsManager
+                ?: return null
+            val mode = appOps.unsafeCheckOpNoThrow(
+                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(),
+                service.packageName,
+            )
+            if (mode != android.app.AppOpsManager.MODE_ALLOWED) return null
+            val usm = service.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+                ?: return null
+            val now = System.currentTimeMillis()
+            val since = now - graceMinutes.coerceAtLeast(1) * 60_000L
+            val events = usm.queryEvents(since, now)
+            val ev = android.app.usage.UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(ev)
+                val t = ev.eventType
+                if (t == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND
+                    || t == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED
+                    || t == android.app.usage.UsageEvents.Event.MOVE_TO_BACKGROUND
+                    || t == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED
+                    || t == android.app.usage.UsageEvents.Event.USER_INTERACTION
+                ) {
+                    return true
+                }
+            }
+            false
+        } catch (_: Throwable) {
+            null
+        }
+    }
 }

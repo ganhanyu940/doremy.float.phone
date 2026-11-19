@@ -120,6 +120,23 @@ object WakeupScheduler {
         }
     }
 
+    /** 开机后重排所有尚未到点的起床叫醒闹钟。 */
+    fun rescheduleAfterBoot(context: Context) {
+        runCatching {
+            val raw = prefs(context).getString(KEY_PLANS, "[]") ?: "[]"
+            val array = JSONArray(raw)
+            val now = System.currentTimeMillis()
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val id = item.optString("id")
+                val at = item.optLong("at", 0L)
+                if (id.isNotBlank() && at > now) {
+                    schedule(context, id, at)
+                }
+            }
+        }
+    }
+
     private fun pendingIntent(context: Context, planId: String): PendingIntent {
         val requestCode = planId.hashCode() and 0x7FFFFFFF
         return PendingIntent.getBroadcast(

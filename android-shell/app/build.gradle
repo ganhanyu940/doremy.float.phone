@@ -73,8 +73,10 @@ android {
         //         **versionCode 必须严格递增**：同号或回退，Android 会拒绝覆盖安装，
         //         安装器只报「应用未安装」，不说是版本号的问题——前面几次手动装的包
         //         装不上就是这个原因，不是签名变了。
-        versionCode 38
-        versionName "1.0.39"
+        // 1.0.40：修复打字闪屏（无障碍锁机放行输入法 IME 包名并收敛多余窗口内容监听 +
+        //         软键盘高度抖动防抖）；补齐睡前锁原生入睡闲置判断与意图锁/叫醒开机重排。
+        versionCode 39
+        versionName "1.0.40"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

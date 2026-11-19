@@ -22,6 +22,7 @@ import { STORY_PARSER_VERSION } from "./story-parser";
 import { loadStoryMessages, replaceStoryMessages, resolveActiveStorySchemes, loadStorySessionsForOwner, resolveStoryMemorySettings, type StoryCharacterSettings, type StoryMessage, type StoryMemorySettings } from "./story-storage";
 import type { ChatMessage } from "./chat-storage";
 import { MacroEngine } from "./macro-engine";
+import { buildOfflineLockPromptHint, consumeOfflineLockDirectives, stripOfflineLockDirectives } from "./device-lock";
 
 const DEFAULT_STORY_FOLD_TAGS = "think,thinking,summary,story_status,story_theater";
 const DEFAULT_STORY_CONTEXT_EXCLUDED_TAGS = "think,thinking,story_theater";
@@ -231,7 +232,13 @@ export async function generateStoryCompletion(
     characterName: character.name,
   }, { skipOutputRegex: true, includeReasoning: true, appId: "story", appTags: ["story"], signal: options?.signal });
 
-  const parsed = parseStoryResponse(rawOutput, regexes, {
+  const { cleanText: cleanedStoryOutput } = consumeOfflineLockDirectives(rawOutput, {
+    characterId: character.id,
+    characterName: character.name,
+    sessionId: options?.storyMemory?.sessionId,
+  });
+
+  const parsed = parseStoryResponse(cleanedStoryOutput, regexes, {
     summaryTag,
     foldTags: effectiveFoldTags,
     macroEngine,
@@ -395,6 +402,10 @@ async function buildStoryPromptMessages(
   if (settings?.floatingPhoneInContext && floatingChatContext?.trim()) {
     messages.push({ role: "system", content: `# 悬浮小手机最近线上聊天\n以下记录用于衔接线上与线下剧情，不要逐字复述：\n${floatingChatContext.trim()}` });
   }
+  const offlineLockHint = buildOfflineLockPromptHint();
+  if (offlineLockHint) {
+    messages.push({ role: "system", content: offlineLockHint });
+  }
   messages.push({ role: "system", content: STORY_VOICE_FORMAT_PROMPT });
   return messages;
 }
@@ -437,7 +448,7 @@ export function rebuildStorySessionRenderCache(characterId: string, sessionId: s
         parserVersion,
       };
     }
-    const parsed = parseStoryResponse(message.rawContent, regexes, {
+    const parsed = parseStoryResponse(stripOfflineLockDirectives(message.rawContent), regexes, {
       summaryTag,
       foldTags: effectiveFoldTags,
       macroEngine,

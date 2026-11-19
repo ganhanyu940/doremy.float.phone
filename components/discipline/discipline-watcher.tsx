@@ -16,7 +16,7 @@
 import { useEffect } from "react";
 
 import { loadIntentLockConfig, settleDueIntents, syncIntentsToNative } from "@/lib/intent-lock";
-import { loadWakeupConfig, syncWakeupPlansToNative } from "@/lib/wakeup";
+import { syncWakeupPlansToNative } from "@/lib/wakeup";
 
 /** 结算结果里"真的锁了"的那几条，广播出去让聊天侧有机会让角色说话。 */
 export const INTENT_SETTLED_EVENT = "intent-lock-settled";
@@ -49,10 +49,8 @@ export function DisciplineWatcher() {
         // 无论开关状态都同步一次：关掉时这一步负责把原生已排的闹钟清掉。
         syncIntentsToNative();
 
-        // ② 起床：把未完成的计划推给原生，保证闹钟与计划一致。
-        if (loadWakeupConfig().enabled) {
-          syncWakeupPlansToNative();
-        }
+        // ② 起床：无论开关状态都同步一次，关掉时负责清掉原生已排的闹钟。
+        syncWakeupPlansToNative();
       } catch {
         // 兜底失败绝不能影响页面，主链路在原生
       }

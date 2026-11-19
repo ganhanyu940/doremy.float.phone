@@ -136,6 +136,13 @@ class CallControlService : AccessibilityService() {
             return
         }
 
+        // 过滤输入法（IME）窗口事件：打字时键盘弹起/候选词浮层会触发窗口状态事件，
+        // 它不是前台应用切换，既不能触发锁机遮罩（会导致打字闪屏、键盘被顶回），
+        // 也不能重置当前前台应用的连续停留计时或频繁向 WebView 派发事件。
+        if (lockGuard.isInputMethodPackage(pkg)) {
+            return
+        }
+
         // 服务正在销毁时不要再触发判定：那一刻去 build 遮罩，加上的浮层会留在
         // 屏幕上且没有任何人能再拆掉它（服务已经没了）。
         if (destroying) return

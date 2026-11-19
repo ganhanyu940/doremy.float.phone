@@ -3,6 +3,7 @@
 import { createSseJsonParser } from "./sse-json";
 import { maybeAppendShortcutCapability, maybeAppendPerceptionStatus } from "./offline-shortcut-capability";
 import { maybeBuildStatusInjection } from "./perception/describe";
+import { buildOfflineLockPromptHint, consumeOfflineLockDirectives } from "./device-lock";
 import { loadCharacters } from "./character-storage";
 import { createBuiltinPreset } from "./builtin-preset";
 import { IMAGE_CHARACTER_NAMING_RULE } from "./image-prompt-rules";
@@ -2134,6 +2135,9 @@ export async function buildChatPromptMessages(
     if (!isOfflineMode) {
         const perceptionInjection = maybeBuildStatusInjection();
         if (perceptionInjection) llmMessages.push({ role: "system", content: perceptionInjection });
+    } else {
+        const offlineLockHint = buildOfflineLockPromptHint();
+        if (offlineLockHint) llmMessages.push({ role: "system", content: offlineLockHint });
     }
 
     // ── 一次性事件提示（定时查岗的反应指导语）──
@@ -2242,6 +2246,12 @@ export async function generateOfflineChatCompletion(
     }
     // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
     rawOutput = stripPresetTexts(rawOutput, preset);
+    // 执行并剥离线下模式的锁机与意图锁隐藏指令
+    rawOutput = consumeOfflineLockDirectives(rawOutput, {
+        characterId: character.id,
+        characterName: character.name,
+        sessionId: session.id,
+    }).cleanText;
     let parsed = parseOfflineResponse(rawOutput, summaryTag);
     // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
     if (offlineTagEnabled) {

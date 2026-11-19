@@ -89,6 +89,8 @@ object BedtimeScheduler {
         if (config.has("endMinute")) p.putInt("endMinute", config.optInt("endMinute", 30).coerceIn(0, 59))
         if (config.has("reason")) p.putString("reason", config.optString("reason", "").take(200))
         if (config.has("leadMinutes")) p.putInt("leadMinutes", config.optInt("leadMinutes", 0).coerceIn(0, 60))
+        if (config.has("idleGraceMinutes")) p.putInt("idleGraceMinutes", config.optInt("idleGraceMinutes", 10).coerceIn(1, 60))
+        if (config.has("lockWhenUnknown")) p.putBoolean("lockWhenUnknown", config.optBoolean("lockWhenUnknown", true))
         p.apply()
 
         val cfg = loadConfig(context)

@@ -1648,8 +1648,16 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
             // 网页 resize 后输入栏自然贴在键盘上方。
             val imePx = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             if (imePx != imeInsetPx) {
-                imeInsetPx = imePx
-                if (::rootContainer.isInitialized) rootContainer.setPadding(0, 0, 0, imePx)
+                // 输入法打字过程中候选词栏/工具条微调只有几个像素的抖动时不反复改容器高度，
+                // 只有在软键盘明显弹起/收起或高度差超过 8dp 时才更新 padding，避免打字时 WebView 高频重排闪屏。
+                val minDiffPx = (8 * density).toInt().coerceAtLeast(1)
+                val shouldApply = imePx == 0 || imeInsetPx == 0 || kotlin.math.abs(imePx - imeInsetPx) >= minDiffPx
+                if (shouldApply) {
+                    imeInsetPx = imePx
+                    if (::rootContainer.isInitialized && rootContainer.paddingBottom != imePx) {
+                        rootContainer.setPadding(0, 0, 0, imePx)
+                    }
+                }
             }
             insets
         }
@@ -1665,8 +1673,10 @@ private fun deleteCachedSharedVideoInternal(cacheId: String): Boolean {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // 临时唤出状态栏后、或从锁屏/多任务回来时焦点变化，需要重新隐藏一次
-        if (hasFocus) hideSystemStatusBar()
+        // 临时唤出状态栏后、或从锁屏/多任务回来时焦点变化，需要重新隐藏一次；
+        // 但软键盘正展开打字时（imeInsetPx > 0）不要因输入法候选窗抢还焦点而重设系统栏，
+        // 否则会触发 WindowInsets 重新派发导致输入框与整个页面闪跳。
+        if (hasFocus && imeInsetPx == 0) hideSystemStatusBar()
     }
 
     /**

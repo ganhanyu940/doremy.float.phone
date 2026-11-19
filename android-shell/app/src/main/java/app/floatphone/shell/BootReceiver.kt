@@ -15,6 +15,8 @@ class BootReceiver : BroadcastReceiver() {
             // 漏了这一步的表现是：重启一次手机之后，这个功能永久不再响，
             // 而用户完全看不出来（开关还是开着的）。
             runCatching { BedtimeScheduler.rescheduleAfterBoot(context) }
+            runCatching { IntentStore.rescheduleAfterBoot(context) }
+            runCatching { WakeupScheduler.rescheduleAfterBoot(context) }
         }
     }
 }

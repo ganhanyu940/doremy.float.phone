@@ -43,6 +43,8 @@ export function configureBedtimeLockNative(payload: {
   endHour: number;
   endMinute: number;
   reason: string;
+  idleGraceMinutes?: number;
+  lockWhenUnknown?: boolean;
 }): boolean {
   const native = bridge();
   if (!native?.configureBedtimeLock) return false;

@@ -78,6 +78,7 @@ import { parseToolCalls, parseToolFetches, executeToolCalls, formatToolResults, 
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { buildGroupRosterMacro } from "./group-admin";
 import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
+import { buildOfflineLockPromptHint, consumeOfflineLockDirectives } from "./device-lock";
 import { buildProviderRequest, nativeToolProtocolForConfig, toLlmRequestMessages, type LlmRequestMessage, type LlmToolCall } from "./llm-provider-adapter";
 import type { DebugPromptSnapshot } from "./debug-store";
 import { throwIfAborted } from "./abort-utils";
@@ -505,6 +506,10 @@ async function buildGroupChatPromptMessages(
         });
     }
     appendEmptyGenerateGuardMessage(llmMessages, config, history);
+    if (activeAppTags.includes("offline")) {
+        const offlineLockHint = buildOfflineLockPromptHint();
+        if (offlineLockHint) llmMessages.push({ role: "system", content: offlineLockHint });
+    }
 
     return { llmMessages, config, preset, regexes, nameToId, memberNames, enabledTools, userName, appTags: activeAppTags };
 }
@@ -1174,6 +1179,11 @@ export async function generateGroupOfflineChatCompletion(
     }
     // 剔除预设配置的文本片段（<思考结束> 等残留标签），不进入记录/提示词
     rawOutput = stripPresetTexts(rawOutput, preset);
+    rawOutput = consumeOfflineLockDirectives(rawOutput, {
+        characterId: session.participantIds?.[0],
+        characterName: session.groupName || "群聊",
+        sessionId: session.id,
+    }).cleanText;
     let parsed = parseOfflineResponse(rawOutput, summaryTag);
     // 思维链：预设开启「线下标签解析」时从正文提取 <thinking> 标签；关闭时走模型原生 reasoning（官方默认行为）
     if (offlineTagEnabled) {

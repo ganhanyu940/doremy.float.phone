@@ -27,6 +27,8 @@ import {
   type WakeupPlan,
 } from "./storage";
 import {
+  cancelWakeupNative,
+  readWakeupOutcomeNative,
   scheduleWakeupNative,
   syncWakeupPlansNative,
   type NativeWakeupPlan,
@@ -162,11 +164,46 @@ export async function scheduleWakeup(input: ScheduleWakeupInput): Promise<Schedu
   };
 }
 
+/** 取消一条叫醒计划：同时更新网页本地存储并取消原生 AlarmManager 闹钟。 */
+export function cancelWakeupPlan(planId: string): void {
+  const all = loadWakeupPlans();
+  const next = all.filter(plan => plan.id !== planId);
+  saveWakeupPlans(next);
+  cancelWakeupNative(planId);
+  syncWakeupPlansToNative();
+}
+
 /** 把网页侧所有未完成的计划整份推给原生（回到前台时对齐一次）。 */
 export function syncWakeupPlansToNative(now = Date.now()): void {
   const config = loadWakeupConfig();
-  const plans = loadWakeupPlans().filter(plan => !plan.done && plan.at > now);
-  const payloads: NativeWakeupPlan[] = plans.map(plan => ({
+  const allPlans = loadWakeupPlans();
+
+  // 先把原生已经响完或已有结果的计划回写到网页存储
+  let mutated = false;
+  const reconciled = allPlans.map(plan => {
+    if (plan.done) return plan;
+    const outcome = readWakeupOutcomeNative(plan.id).trim();
+    if (outcome) {
+      mutated = true;
+      return { ...plan, done: true, note: outcome };
+    }
+    return plan;
+  });
+  if (mutated) {
+    saveWakeupPlans(reconciled);
+  }
+
+  const activePlans = reconciled.filter(plan => !plan.done && plan.at > now);
+  if (!config.enabled) {
+    // 关掉总开关时必须清掉原生计划并逐条取消闹钟，否则明早还会照响
+    for (const plan of activePlans) {
+      cancelWakeupNative(plan.id);
+    }
+    syncWakeupPlansNative([]);
+    return;
+  }
+
+  const payloads: NativeWakeupPlan[] = activePlans.map(plan => ({
     id: plan.id,
     at: plan.at,
     speech: plan.speech,
@@ -180,6 +217,9 @@ export function syncWakeupPlansToNative(now = Date.now()): void {
     maxRounds: config.maxRounds,
   }));
   syncWakeupPlansNative(payloads);
+  for (const plan of activePlans) {
+    scheduleWakeupNative(plan.id, plan.at);
+  }
 }
 
 function formatAt(ms: number): string {
