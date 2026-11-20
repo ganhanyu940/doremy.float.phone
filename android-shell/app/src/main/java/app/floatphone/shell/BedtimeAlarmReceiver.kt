@@ -28,6 +28,10 @@ class BedtimeAlarmReceiver : BroadcastReceiver() {
     private val wakeLockTimeoutMs = 60_000L
 
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == BedtimeScheduler.ACTION_REMINDER) {
+            runCatching { BedtimeScheduler.postReminder(context) }
+            return
+        }
         // ① 先把明天那一次排上，再处理这一次。
         runCatching { BedtimeScheduler.scheduleNext(context) }
 

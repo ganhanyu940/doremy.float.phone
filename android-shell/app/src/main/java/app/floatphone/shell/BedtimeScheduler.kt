@@ -94,8 +94,7 @@ object BedtimeScheduler {
         p.apply()
 
         val cfg = loadConfig(context)
-        if (cfg.enabled) scheduleNext(context) else cancel(context)
-        true
+        if (cfg.enabled) scheduleNext(context) else { cancel(context); true }
     }.getOrDefault(false)
 
     /**
@@ -112,7 +111,7 @@ object BedtimeScheduler {
         }
 
         val now = System.currentTimeMillis()
-        val next = nextTriggerAt(now, cfg.startHour, cfg.startMinute, cfg.leadMinutes)
+        val next = nextTriggerAt(now, cfg.startHour, cfg.startMinute, 0)
         val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@runCatching false
         val pi = pendingIntent(context)
 
@@ -125,6 +124,12 @@ object BedtimeScheduler {
         } else {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pi)
         }
+        val reminder = reminderIntent(context)
+        val reminderAt = next - 15 * 60_000L
+        if (reminderAt > now) {
+            if (exact) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderAt, reminder)
+            else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderAt, reminder)
+        } else am.cancel(reminder)
         prefs(context).edit().putLong("nextTriggerAt", next).putBoolean("lastScheduleExact", exact).apply()
         true
     }.getOrDefault(false)
@@ -137,15 +142,16 @@ object BedtimeScheduler {
         cal.set(java.util.Calendar.MINUTE, startMinute)
         cal.set(java.util.Calendar.SECOND, 0)
         cal.set(java.util.Calendar.MILLISECOND, 0)
-        var target = cal.timeInMillis - leadMinutes * 60_000L
-        // 已经过了（或正好在当下）就顺延到明天
-        if (target <= now + 30_000L) target += 24 * 60 * 60 * 1000L
-        return target
+        val lead = leadMinutes * 60_000L
+        // 按本地日历顺延，保持作息时间，不按固定 24 小时猜夏令时边界。
+        if (cal.timeInMillis - lead <= now) cal.add(java.util.Calendar.DAY_OF_MONTH, 1)
+        return cal.timeInMillis - lead
     }
 
     fun cancel(context: Context): Unit = runCatching {
         val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@runCatching
         am.cancel(pendingIntent(context))
+        am.cancel(reminderIntent(context))
         prefs(context).edit().remove("nextTriggerAt").apply()
     }.getOrDefault(Unit)
 
@@ -163,6 +169,27 @@ object BedtimeScheduler {
             Intent(context, BedtimeAlarmReceiver::class.java).setAction(ACTION_TRIGGER),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    const val ACTION_REMINDER = "app.floatphone.shell.BEDTIME_REMINDER"
+
+    private fun reminderIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
+        context, 8028, Intent(context, BedtimeAlarmReceiver::class.java).setAction(ACTION_REMINDER),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    fun postReminder(context: Context) {
+        val p = prefs(context)
+        val remaining = p.getLong("nextTriggerAt", 0L) - System.currentTimeMillis()
+        if (!loadConfig(context).enabled || remaining !in 1L..(16L * 60_000L)) return
+        val nm = context.getSystemService(android.app.NotificationManager::class.java) ?: return
+        val channel = "bedtime_reminders"
+        nm.createNotificationChannel(android.app.NotificationChannel(channel, "睡前收尾提醒", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+        nm.notify(8028, androidx.core.app.NotificationCompat.Builder(context, channel)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("该准备睡觉了")
+            .setContentText("收个尾，把手机放下。明天再接着复习。")
+            .setAutoCancel(true).build())
+    }
 
     /** 状态摘要，网页面板用来显示「下一次会在几点响」和是否精确。 */
     fun statusJson(context: Context): JSONObject {

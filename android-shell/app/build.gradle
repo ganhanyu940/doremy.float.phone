@@ -75,8 +75,9 @@ android {
         //         装不上就是这个原因，不是签名变了。
         // 1.0.40：修复打字闪屏（无障碍锁机放行输入法 IME 包名并收敛多余窗口内容监听 +
         //         软键盘高度抖动防抖）；补齐睡前锁原生入睡闲置判断与意图锁/叫醒开机重排。
-        versionCode 39
-        versionName "1.0.40"
+        // 1.0.41：考前陪管、应用级拦截与睡前提醒。
+        versionCode 40
+        versionName "1.0.41"
         buildConfigField "String", "SITE_URL", "\"${siteUrl}\""
     }
 

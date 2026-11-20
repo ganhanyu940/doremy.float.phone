@@ -2,6 +2,14 @@ name: Validate Runtime Diagnostics Web UI
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "lib/perception/interaction-context.ts"
+      - "components/device-lock/**"
+      - "lib/phone-check/**"
+      - "lib/*-engine.ts"
+      - ".github/workflows/diagnostics-web-check.yml"
   push:
     branches: [main]
     paths:
@@ -28,6 +36,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: TypeScript check
+        run: npx --no-install tsc --noEmit
       - name: Production web build
         env:
           NEXT_TELEMETRY_DISABLED: "1"

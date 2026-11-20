@@ -3,6 +3,7 @@
 import { createSseJsonParser } from "./sse-json";
 import { maybeAppendShortcutCapability, maybeAppendPerceptionStatus } from "./offline-shortcut-capability";
 import { maybeBuildStatusInjection } from "./perception/describe";
+import { buildInteractionContext, LOCAL_INTERACTION_PREFIX } from "./perception/interaction-context";
 import { buildOfflineLockPromptHint, consumeOfflineLockDirectives } from "./device-lock";
 import { loadCharacters } from "./character-storage";
 import { createBuiltinPreset } from "./builtin-preset";
@@ -2140,6 +2141,11 @@ export async function buildChatPromptMessages(
         if (offlineLockHint) llmMessages.push({ role: "system", content: offlineLockHint });
     }
 
+    if (resolvedAppId === "chat") {
+        const interaction = buildInteractionContext({ chatSession: session, characterId: character.id });
+        if (interaction) llmMessages.push({ role: "system", content: interaction });
+    }
+
     // ── 一次性事件提示（定时查岗的反应指导语）──
     // 放在最后：它是「此刻该怎么回应」的即时要求，压过前面所有常驻设定。
     // 只存在于本次请求的 messages 数组里，没人把它写进聊天记录，所以不会
@@ -2751,7 +2757,8 @@ async function generateChatCompletionCore(
         // 900KB 上限（app/api/push/jobs/route.ts），一撞就是整条兜底挂不上、
         // 静默丢掉离线回复——为了第二轮续跑赔掉第一轮，不划算。冷场重连与定时
         // 唤醒是低频任务，那两条照常挂续跑。
-        const bailoutMessages = [...llmMessages];
+        const bailoutMessages = llmMessages.filter(message =>
+            typeof message.content !== "string" || !message.content.startsWith(LOCAL_INTERACTION_PREFIX));
         // 这条路径不挂续跑（见上），所以也不能向角色承诺第二轮
         maybeAppendShortcutCapability(bailoutMessages, { continuationAvailable: false });
         // 感知状态：同样只在这条（云端接管的）兜底路径注入——本地能生成时

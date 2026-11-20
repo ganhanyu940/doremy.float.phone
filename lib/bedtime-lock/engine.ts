@@ -159,8 +159,8 @@ export function evaluateBedtimeLock(config: BedtimeLockConfig, now = Date.now())
   }
 
   const runtime = loadBedtimeRuntime();
-  const today = dateKey(now);
-  if (runtime.lastLockDate === today) {
+  const nightKey = dateKey(window.lockUntilMs);
+  if (runtime.lastLockDate === nightKey) {
     return { shouldLock: false, reason: "今晚已经锁过一次了，不再重复", lockUntilMs: 0, inWindow: true };
   }
   if (runtime.userUnlockAt) {
@@ -173,7 +173,7 @@ export function evaluateBedtimeLock(config: BedtimeLockConfig, now = Date.now())
     // 所以直接问「解锁那一刻是否也处在本轮窗口内」：是，就说明用户是在
     // 这一轮里解开的，本轮不再动手。这个判断对同日窗口和跨天窗口都成立。
     const unlockWindow = evaluateBedtimeWindow(config, runtime.userUnlockAt);
-    if (unlockWindow.inWindow) {
+    if (unlockWindow.inWindow && unlockWindow.lockUntilMs === window.lockUntilMs) {
       return {
         shouldLock: false,
         reason: "你这一轮自己解开过了，不再锁",
@@ -292,7 +292,7 @@ export function runBedtimeLockIfDue(now = Date.now()): BedtimeLockOutcome {
   const runtime = loadBedtimeRuntime();
   saveBedtimeRuntime({
     ...runtime,
-    lastLockDate: dateKey(now),
+    lastLockDate: dateKey(decision.lockUntilMs),
     lastLockAt: now,
     lastOutcome: `已锁到 ${clock(config.endHour, config.endMinute)}`,
   });

@@ -58,6 +58,12 @@ class CallControlService : AccessibilityService() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private var screenReceiverRegistered = false
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (!destroying && intent.action == Intent.ACTION_SCREEN_OFF) lockGuard.onScreenOff()
+        }
+    }
     private val pendingLock = Any()
     @Volatile private var delivering = false
 
@@ -98,6 +104,24 @@ class CallControlService : AccessibilityService() {
         currentPackage = prefs.getString(CURRENT_PACKAGE_KEY, "").orEmpty()
         dwellStartAt = prefs.getLong(DWELL_START_KEY, 0L)
         reportedPackage = prefs.getString(REPORTED_PACKAGE_KEY, "").orEmpty()
+        if (!screenReceiverRegistered) {
+            screenReceiverRegistered = runCatching {
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this, screenReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF),
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+                true
+            }.getOrDefault(false)
+        }
+        // 只取当前活动窗口的包名，不遍历节点、不读文字；不拿旧缓存当作仍在前台。
+        runCatching {
+            val root = rootInActiveWindow
+            @Suppress("DEPRECATION")
+            val activePackage = try { root?.packageName?.toString().orEmpty() } finally { root?.recycle() }
+            if (activePackage.isNotBlank() && !lockGuard.isInputMethodPackage(activePackage)) {
+                lockGuard.onForegroundPackageChanged(activePackage)
+            }
+        }
         handler.removeCallbacks(dwellTicker)
         handler.post(dwellTicker)
     }
@@ -407,6 +431,10 @@ class CallControlService : AccessibilityService() {
         destroying = true
         if (instance === this) instance = null
         handler.removeCallbacks(dwellTicker)
+        if (screenReceiverRegistered) {
+            runCatching { unregisterReceiver(screenReceiver) }
+            screenReceiverRegistered = false
+        }
         ScreenshotBridge.attach(null)
         // 服务被系统回收/用户关闭无障碍时，遮罩必须一并收掉：
         // 否则会留下一层再也点不掉的死浮层。
