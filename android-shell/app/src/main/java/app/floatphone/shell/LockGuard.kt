@@ -66,6 +66,8 @@ class LockGuard(private val service: AccessibilityService) {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+    private val focus = FocusGuard(service, handler, { pkg -> pkg in whitelist() || pkg in alwaysAllowedCached() }) { renderForeground() }
+    private fun overlayDeadline(): Long = if (isLocked()) lockedUntil() else focus.blockedUntil(lastPackage)
     private var overlay: View? = null
     private var countdown: TextView? = null
     private var reasonView: TextView? = null
@@ -115,10 +117,11 @@ class LockGuard(private val service: AccessibilityService) {
         if (config.has("reason")) editor.putString("reason", config.optString("reason", "").take(200))
         if (config.has("source")) editor.putString("source", config.optString("source", "").take(80))
         editor.apply()
+        config.optJSONObject("focus")?.let { focus.configure(it) }
         // 配置变了立刻重新判定一次：关掉锁应该马上放人。
         // 注意调的是本类的 onForegroundPackageChanged，不是 service 的
         // （AccessibilityService 上没有这个方法，写成 service.xxx 会编译失败）。
-        onForegroundPackageChanged(lastPackage)
+        handler.post { onForegroundPackageChanged(lastPackage) }
         true
     }.getOrDefault(false)
 
@@ -132,6 +135,10 @@ class LockGuard(private val service: AccessibilityService) {
             .putString("reason", reason.take(200))
             .putString("source", source.take(80))
             .apply()
+        if (source == "bedtime") {
+            val windowEnd = bedtimeWindowEnd(now)
+            if (windowEnd > 0L) bedtimePrefs().edit().putString("lastLockDate", bedtimeWindowKey(windowEnd)).apply()
+        }
         dispatch("lock", JSONObject().put("until", capped).put("reason", reason).put("source", source))
         onForegroundPackageChanged(lastPackage)
         return JSONObject()
@@ -160,6 +167,7 @@ class LockGuard(private val service: AccessibilityService) {
             .put("reason", lockReason())
             .put("source", lockSource())
             .put("whitelist", prefs().getString("whitelist", "[]"))
+            .put("focus", focus.status())
     }
 
     private fun whitelist(): Set<String> {
@@ -281,9 +289,20 @@ class LockGuard(private val service: AccessibilityService) {
 
     /** 由无障碍事件驱动：前台应用变化时调用。 */
     fun onForegroundPackageChanged(pkg: String) {
+        if (android.os.Looper.myLooper() != handler.looper) {
+            handler.post { onForegroundPackageChanged(pkg) }
+            return
+        }
+        if (closed) return
         lastPackage = pkg
+        focus.foreground(pkg)
+        renderForeground()
+    }
+
+    private fun renderForeground() {
+        val pkg = lastPackage
         if (pkg.isBlank()) return
-        if (!isLocked()) {
+        if (overlayDeadline() <= 0L) {
             hideOverlay()
             return
         }
@@ -296,12 +315,6 @@ class LockGuard(private val service: AccessibilityService) {
             return
         }
         showOverlay()
-        // 去重：同一个包连续来多条窗口事件（切页面、弹窗都会发）时只推一次。
-        // 原来每条都 dispatch，网页侧会收到一串重复的 blocked 事件。
-        if (lastBlockedPackage != pkg) {
-            lastBlockedPackage = pkg
-            dispatch("blocked", JSONObject().put("package", pkg).put("until", lockedUntil()))
-        }
     }
 
     /** 上一次已推送过 blocked 事件的包名，避免重复推送（见 onForegroundPackageChanged）。 */
@@ -316,6 +329,7 @@ class LockGuard(private val service: AccessibilityService) {
     private var pendingShow = false
 
     private fun showOverlay() {
+        if (closed) return
         if (overlay != null) {
             refreshCountdown()
             return
@@ -333,6 +347,11 @@ class LockGuard(private val service: AccessibilityService) {
         pendingShow = true
         handler.post {
             runCatching {
+                val pkg = lastPackage
+                if (closed || overlayDeadline() <= 0L || pkg in whitelist() || pkg in alwaysAllowedCached()) {
+                    pendingShow = false
+                    return@post
+                }
                 val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
                 val root = buildOverlayView()
                 val params = WindowManager.LayoutParams(
@@ -358,6 +377,11 @@ class LockGuard(private val service: AccessibilityService) {
                 // 浮层没加成功前保持 pendingShow=true，成功后交给 overlay 接管
                 wm.addView(root, params)
                 overlay = root
+                if (!isLocked() && focus.blockedUntil(pkg) > 0L) focus.shown(pkg)
+                if (lastBlockedPackage != pkg) {
+                    lastBlockedPackage = pkg
+                    dispatch("blocked", JSONObject().put("package", pkg).put("until", overlayDeadline()))
+                }
                 pendingShow = false
                 startTicking()
             }.onFailure {
@@ -613,9 +637,9 @@ class LockGuard(private val service: AccessibilityService) {
 
     private val ticker = object : Runnable {
         override fun run() {
-            if (!isLocked()) {
+            if (overlayDeadline() <= 0L || lastPackage in whitelist() || lastPackage in alwaysAllowedCached()) {
                 hideOverlay()
-                dispatch("unlock", JSONObject().put("source", "expired"))
+                focus.foreground(lastPackage)
                 return
             }
             refreshCountdown()
@@ -633,7 +657,7 @@ class LockGuard(private val service: AccessibilityService) {
     }
 
     private fun refreshCountdown() {
-        val remaining = (lockedUntil() - System.currentTimeMillis()).coerceAtLeast(0L)
+        val remaining = (overlayDeadline() - System.currentTimeMillis()).coerceAtLeast(0L)
         val total = remaining / 1000
         val h = total / 3600
         val m = (total % 3600) / 60
@@ -642,11 +666,20 @@ class LockGuard(private val service: AccessibilityService) {
         // 必须用 let 包一层。上一版就是这么炸的。
         val formatted = String.format(java.util.Locale.US, "%02d:%02d:%02d", h, m, s)
         countdown?.let { it.text = formatted }
-        val why = lockReason()
+        val why = if (isLocked()) lockReason() else "这个应用暂停使用，回去做你刚才的事。"
         reasonView?.let { it.text = if (why.isNotBlank()) why else "" }
     }
 
+    fun onScreenOff() {
+        focus.resetDwell()
+        if (!closed) focus.foreground(lastPackage)
+    }
+
+    @Volatile private var closed = false
+
     fun shutdown() {
+        closed = true
+        focus.shutdown()
         hideOverlay()
     }
 
@@ -666,8 +699,8 @@ class LockGuard(private val service: AccessibilityService) {
     /** 今天（本轮）是否已经锁过，避免同一晚反复锁。 */
     private fun bedtimeLockedDate(): String = bedtimePrefs().getString("lastLockDate", "").orEmpty()
 
-    private fun todayDateString(): String {
-        val cal = java.util.Calendar.getInstance()
+    private fun bedtimeWindowKey(end: Long): String {
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = end }
         return String.format(
             java.util.Locale.US,
             "%04d-%02d-%02d",
@@ -683,14 +716,13 @@ class LockGuard(private val service: AccessibilityService) {
      * 跨天支持是重点：23:00 → 06:30 是最常见的配置，直接比较「now 在不在
      * start~end 之间」永远判不进去，所以这里按「今天开始、明天结束」处理。
      */
-    private fun bedtimeWindowEnd(): Long {
+    private fun bedtimeWindowEnd(now: Long = System.currentTimeMillis()): Long {
         val p = bedtimePrefs()
         if (!p.getBoolean("enabled", false)) return 0L
         val startHour = p.getInt("startHour", 23).coerceIn(0, 23)
         val startMinute = p.getInt("startMinute", 0).coerceIn(0, 59)
         val endHour = p.getInt("endHour", 6).coerceIn(0, 23)
         val endMinute = p.getInt("endMinute", 30).coerceIn(0, 59)
-        val now = System.currentTimeMillis()
 
         val startToday = java.util.Calendar.getInstance().apply {
             timeInMillis = now
@@ -745,19 +777,14 @@ class LockGuard(private val service: AccessibilityService) {
         if (isLocked()) {
             return JSONObject().put("locked", false).put("message", "已经处于锁定状态")
         }
-        val today = todayDateString()
-        if (bedtimeLockedDate() == today) {
+        val tonight = bedtimeWindowKey(until)
+        if (bedtimeLockedDate() == tonight) {
             return JSONObject().put("locked", false).put("message", "今晚已经锁过一次了")
         }
         // 用户在这一轮里自己解开过就不再锁（网页写 userUnlockAt）
         val unlockAt = p.getLong("userUnlockAt", 0L)
-        if (unlockAt > 0L) {
-            val sinceUnlock = System.currentTimeMillis() - unlockAt
-            // 6 小时内解开过就算这一轮已放过——比精确比对时间窗更稳，
-            // 也避免网页和原生对"这一轮"的理解不一致。
-            if (sinceUnlock in 0L..(6L * 60 * 60 * 1000)) {
-                return JSONObject().put("locked", false).put("message", "你这一轮自己解开过，不再锁")
-            }
+        if (unlockAt in 1L..System.currentTimeMillis() && bedtimeWindowEnd(unlockAt) == until) {
+            return JSONObject().put("locked", false).put("message", "你这一轮自己解开过，不再锁")
         }
 
         // 检查最近 idleGraceMinutes 分钟内手机是否有使用活动：
@@ -785,7 +812,7 @@ class LockGuard(private val service: AccessibilityService) {
         val maxMs = 8L * 60L * 60L * 1000L
         val truncated = requestedMs > maxMs
         lock(until, reason, "bedtime")
-        p.edit().putString("lastLockDate", today).apply()
+        p.edit().putString("lastLockDate", tonight).apply()
         val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
         val actualUntil = if (truncated) System.currentTimeMillis() + maxMs else until
         val untilText = fmt.format(java.util.Date(actualUntil))

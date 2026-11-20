@@ -331,13 +331,36 @@ function mergeChapterDaySeconds(
   return merged;
 }
 
-/** 给 float 段配上「那段时间里最后打开的内部应用」。 */
-function attachInnerApp(segment: UsageTimelineSegment, spans: InnerAppSpan[]): string | undefined {
-  let found: string | undefined;
+/** 只认这次 Float 前台期间观测到的内部切换；未观测的前缀不猜。 */
+function splitInnerApps(
+  segment: UsageTimelineSegment,
+  spans: InnerAppSpan[],
+  study: Set<string>,
+): ClassifiedSegment[] {
+  const parts: ClassifiedSegment[] = [];
+  let startAt = segment.startAt;
+  let app: string | undefined;
+  const append = (endAt: number) => {
+    if (endAt <= startAt) return;
+    parts.push({
+      ...segment,
+      startAt,
+      endAt,
+      seconds: (endAt - startAt) / 1000,
+      innerApp: app,
+      kind: !app ? "neutral" : study.has(app) ? "float" : "play",
+    });
+  };
   for (const span of spans) {
-    if (span.at >= segment.startAt && span.at <= segment.endAt) found = span.app;
+    if (span.at < segment.startAt) continue;
+    if (span.at >= segment.endAt) break;
+    if (span.app === app) continue;
+    append(span.at);
+    startAt = span.at;
+    app = span.app;
   }
-  return found;
+  append(segment.endAt);
+  return parts;
 }
 
 /**
@@ -348,26 +371,18 @@ function attachInnerApp(segment: UsageTimelineSegment, spans: InnerAppSpan[]): s
 export function classifyTimeline(config: PhoneCheckConfig, floatPackage = "app.floatphone.shell"): ClassifiedSegment[] {
   const studySet = new Set(config.studyPackages);
   const innerStudy = new Set(config.studyInnerApps);
-  const spans = loadInnerAppSpans();
+  const spans = loadInnerAppSpans().sort((a, b) => a.at - b.at);
   const since = Date.now() - config.keepHours * 60 * 60 * 1000;
 
   return loadAppUsageTimeline(400)
-    .filter(segment => segment.endAt >= since)
-    .map(segment => {
-      if (segment.package === floatPackage) {
-        const innerApp = attachInnerApp(segment, spans);
-        // float 内部：命中学习名单才算学习，否则算玩。
-        // 没记到内部应用时算「中性」——不能因为没记上就判他玩，
-        // 那会让用户觉得这个统计在冤枉他。
-        const kind: ClassifiedSegment["kind"] = !innerApp
-          ? "neutral"
-          : innerStudy.has(innerApp)
-            ? "float"
-            : "play";
-        return { ...segment, kind, innerApp };
-      }
-      const kind: ClassifiedSegment["kind"] = studySet.has(segment.package) ? "study" : "play";
-      return { ...segment, kind };
+    .filter(segment => segment.endAt > since)
+    .flatMap((segment): ClassifiedSegment[] => {
+      if (segment.package === floatPackage) return splitInnerApps(segment, spans, innerStudy);
+      return [{ ...segment, kind: studySet.has(segment.package) ? "study" : "play" }];
+    })
+    .filter(segment => segment.endAt > since)
+    .map(segment => segment.startAt >= since ? segment : {
+      ...segment, startAt: since, seconds: (segment.endAt - since) / 1000,
     });
 }
 
@@ -416,43 +431,19 @@ export type PhoneCheckSummary = {
 };
 
 /**
- * 从小手机内部的切换点算出「每个应用待了多久」。
- *
- * 算法：把内部切换点按时间排序，每段时长 = 下一次切换的时刻 − 这一次的时刻。
- * 最后一段截止到「此刻」或「float 离开前台」——两者取早，否则用户已经
- * 切出去半小时了，还会继续给最后那个应用记账。
- *
- * 只在 float 处于前台的区间内记账：切出去看微信的那段时间不该算到
- * 小手机里的某个应用头上，否则排行会虚高。
+ * 排行和学习总计共用已经切分的时间线，不再独立重复归账。
  */
 export function summarizeInnerApps(
   segments: ClassifiedSegment[],
-  spans: InnerAppSpan[],
+  _spans: InnerAppSpan[],
   studyInnerApps: string[],
   floatPackage = "app.floatphone.shell",
 ): InnerAppUsage[] {
-  const floatSpans = segments.filter(segment => segment.package === floatPackage);
-  if (!floatSpans.length || !spans.length) return [];
-
   const studySet = new Set(studyInnerApps);
   const totals = new Map<string, number>();
-  const sorted = [...spans].sort((a, b) => a.at - b.at);
-
-  for (let index = 0; index < sorted.length; index += 1) {
-    const span = sorted[index];
-    const next = sorted[index + 1];
-    let end = next ? next.at : Date.now();
-
-    // 截止到「包含这个时刻的 float 段」的结束——既处理「已经切出小手机」，
-    // 也处理「最后一段本来就还没结束」。
-    const host = floatSpans.find(segment => span.at >= segment.startAt && span.at <= segment.endAt);
-    if (host && host.endAt < end) end = host.endAt;
-    if (!host) continue;
-
-    const seconds = Math.max(0, (end - span.at) / 1000);
-    // 少于 3 秒的切换是误触或快速点进点出，不记账
-    if (seconds < 3) continue;
-    totals.set(span.app, (totals.get(span.app) ?? 0) + seconds);
+  for (const { package: pkg, innerApp, seconds } of segments) {
+    if (pkg !== floatPackage || !innerApp || seconds <= 0) continue;
+    totals.set(innerApp, (totals.get(innerApp) ?? 0) + seconds);
   }
 
   return Array.from(totals.entries())

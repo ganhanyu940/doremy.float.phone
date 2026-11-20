@@ -79,6 +79,7 @@ import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { buildGroupRosterMacro } from "./group-admin";
 import { parseOfflineResponse, extractThinkingTag, type ParsedOfflineResponse } from "./chat-offline-storage";
 import { buildOfflineLockPromptHint, consumeOfflineLockDirectives } from "./device-lock";
+import { buildInteractionContext } from "./perception/interaction-context";
 import { buildProviderRequest, nativeToolProtocolForConfig, toLlmRequestMessages, type LlmRequestMessage, type LlmToolCall } from "./llm-provider-adapter";
 import type { DebugPromptSnapshot } from "./debug-store";
 import { throwIfAborted } from "./abort-utils";
@@ -506,6 +507,10 @@ async function buildGroupChatPromptMessages(
         });
     }
     appendEmptyGenerateGuardMessage(llmMessages, config, history);
+    if (activeAppTags.includes("group_chat")) {
+        const interaction = buildInteractionContext({ chatSession: session });
+        if (interaction) llmMessages.push({ role: "system", content: interaction });
+    }
     if (activeAppTags.includes("offline")) {
         const offlineLockHint = buildOfflineLockPromptHint();
         if (offlineLockHint) llmMessages.push({ role: "system", content: offlineLockHint });

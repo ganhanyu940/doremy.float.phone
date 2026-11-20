@@ -27,6 +27,9 @@ import {
 import {
   listLaunchableApps,
   openAccessibilitySettings,
+  readFocusState,
+  saveFocusRule,
+  type FocusRule,
   type LaunchableApp,
 } from "@/lib/phone-lock";
 import { isShellEnvironment as isShell } from "@/lib/shell-call-overlay";
@@ -35,6 +38,18 @@ export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => v
   const [config, setConfig] = useState<PhoneLockConfig>(() => loadPhoneLockConfig());
   const [apps, setApps] = useState<LaunchableApp[]>([]);
   const [statusText, setStatusText] = useState("");
+  const [focus, setFocus] = useState<FocusRule | null>(() => readFocusState());
+  const [focusQuery, setFocusQuery] = useState('');
+  const saveFocus = (enabled: boolean) => {
+    if (!focus) return;
+    if (enabled && (!focus.packages.length || focus.start === focus.end)) { onNotice?.('请先选要管的应用，并设置不同的开始和结束时间'); return; }
+    const next = { ...focus, enabled, until: enabled && focus.until <= Date.now() ? Date.now() + 28 * 86_400_000 : focus.until };
+    if (!saveFocusRule(next)) { onNotice?.('没有保存成功，请确认新壳和无障碍服务已就绪'); return; }
+    setFocus(readFocusState() ?? next);
+    onNotice?.(enabled ? '考前陪管已保存' : '考前陪管已关闭');
+  };
+  const clock = (n: number) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+  const fromClock = (s: string) => { const [h, m] = s.split(':').map(Number); return (h ?? 0) * 60 + (m ?? 0); };
   const [availability, setAvailability] = useState(() => checkCharacterLockAvailability());
 
   const refresh = useCallback(() => {
@@ -48,7 +63,12 @@ export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => v
     refresh();
     const onChange = () => refresh();
     window.addEventListener("phone-lock-config-changed", onChange);
-    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      refresh();
+      // 回到网页后补读刚连上的无障碍桥，同时保留已有的未保存编辑。
+      setFocus(current => current ?? readFocusState());
+    };
     document.addEventListener("visibilitychange", onVisible);
     // 应用列表只在真正需要时才读（要查 PackageManager，比较重）
     try { setApps(listLaunchableApps()); } catch { setApps([]); }
@@ -161,6 +181,29 @@ export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => v
           <div className="per-note" style={{ padding: "0 var(--ui-padding, 16px)" }}>
             还要单独开能力：工具箱 → 内置能力 → 「锁住手机」。两处都开，角色才调得到。
           </div>
+        </div>
+
+        <div>
+          <div className="settings-menu-section-title">考前陪管 · 无需聊天触发</div>
+          {!focus ? <p className="per-note">需要支持考前陪管的新安卓壳及已连接的无障碍服务。</p> : <div className="menu-group" style={{ padding: 12 }}>
+            <p>学习时段持续使用所选应用：3 分钟提醒，5 分钟拦截该应用 25 分钟。沿用锁机台白名单。</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <label>开始 <input type="time" value={clock(focus.start)} onChange={e => { if (e.target.value) setFocus({ ...focus, start: fromClock(e.target.value) }); }} /></label>
+              <label>结束 <input type="time" value={clock(focus.end)} onChange={e => { if (e.target.value) setFocus({ ...focus, end: fromClock(e.target.value) }); }} /></label>
+            </div>
+            <p>已选 {focus.packages.length} 个。首次开启起 28 天结束。</p>
+            <input type="search" aria-label="搜索应用" placeholder="搜索要拦截的应用" value={focusQuery} onChange={e => setFocusQuery(e.target.value)} />
+            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {apps.filter(app => !focusQuery.trim() || `${app.label} ${app.package}`.toLowerCase().includes(focusQuery.trim().toLowerCase())).map(app => <label key={app.package} style={{ display: 'block', padding: '6px 0' }}>
+                <input type="checkbox" checked={focus.packages.includes(app.package)} onChange={e => setFocus({ ...focus, packages: e.target.checked ? [...focus.packages, app.package] : focus.packages.filter(pkg => pkg !== app.package) })} /> {app.label}
+              </label>)}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(true)}>{focus.enabled && focus.until > Date.now() ? '保存规则' : '保存并开启'}</button>
+              {focus.enabled && <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(false)}>关闭陪管</button>}
+              <button type="button" className="ui-btn ui-btn-outline" onClick={() => { refresh(); setFocus(readFocusState()); }}>读取已保存规则</button>
+            </div>
+          </div>}
         </div>
 
         {/* 时长 */}

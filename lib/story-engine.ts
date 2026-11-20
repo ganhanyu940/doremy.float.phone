@@ -23,6 +23,7 @@ import { loadStoryMessages, replaceStoryMessages, resolveActiveStorySchemes, loa
 import type { ChatMessage } from "./chat-storage";
 import { MacroEngine } from "./macro-engine";
 import { buildOfflineLockPromptHint, consumeOfflineLockDirectives, stripOfflineLockDirectives } from "./device-lock";
+import { buildInteractionContext } from "./perception/interaction-context";
 
 const DEFAULT_STORY_FOLD_TAGS = "think,thinking,summary,story_status,story_theater";
 const DEFAULT_STORY_CONTEXT_EXCLUDED_TAGS = "think,thinking,story_theater";
@@ -406,6 +407,12 @@ async function buildStoryPromptMessages(
   if (offlineLockHint) {
     messages.push({ role: "system", content: offlineLockHint });
   }
+  const interaction = buildInteractionContext({
+    characterId,
+    storyHistory: history,
+    allowOtherApps: memorySettings.readOtherAppsMemory && (participantIds?.length ?? 0) <= 1 && storyMemory?.ownerType !== "group",
+  });
+  if (interaction) messages.push({ role: "system", content: interaction });
   messages.push({ role: "system", content: STORY_VOICE_FORMAT_PROMPT });
   return messages;
 }

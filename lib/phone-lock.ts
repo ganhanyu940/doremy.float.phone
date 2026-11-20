@@ -32,6 +32,9 @@ export type PhoneLockStatus = {
   whitelist: string[];
 };
 
+export type FocusRule = { enabled: boolean; packages: string[]; start: number; end: number; until: number };
+export type FocusState = FocusRule & { lastEvent?: { event: string; label?: string; at: number } };
+
 export type LaunchableApp = {
   package: string;
   label: string;
@@ -126,6 +129,31 @@ export function configurePhoneLock(config: {
   } catch {
     return false;
   }
+}
+
+/** Separate native patch: never replace the existing whitelist when saving focus rules. */
+export function saveFocusRule(rule: FocusRule): boolean {
+  try { return bridge()?.configureLockGuard?.(JSON.stringify({ focus: rule })) === true; }
+  catch { return false; }
+}
+
+export function readFocusState(): FocusState | null {
+  try {
+    const raw = JSON.parse(bridge()?.getLockGuardStatus?.() || '{}');
+    return raw.focus && Array.isArray(raw.focus.packages) ? raw.focus as FocusState : null;
+  } catch { return null; }
+}
+
+export function describeFocusEvent(now = Date.now()): string {
+  const focus = readFocusState();
+  const event = focus?.lastEvent;
+  if (!focus?.enabled || focus.until <= now || !event || !Number.isFinite(event.at)) return '';
+  const elapsed = now - event.at;
+  if (elapsed < 0 || elapsed > 60 * 60_000) return '';
+  const action = event.event === 'blocked' ? '已显示拦截遮罩' : event.event === 'reminder' ? '已发送提醒' : event.event === 'reminder_unavailable' ? '提醒未能发送' : '';
+  if (!action) return '';
+  const when = elapsed < 60_000 ? '刚刚' : `${Math.floor(elapsed / 60_000)} 分钟前`;
+  return `现实手机的本机陪管记录：${when}${action}。这是已发生的事件，不代表对方此刻还在使用；不要据此再执行一次锁机。`;
 }
 
 export type LockResult = { ok: boolean; until?: number; minutes?: number; message?: string };

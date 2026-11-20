@@ -19,12 +19,11 @@ import org.json.JSONObject
  *
  * 判定口径（与 lib/intent-lock/engine.ts 的网页侧保持一致，改一处要同步另一处）：
  *   · 只看「用户说完之后」这段窗口内**非放行清单**的前台使用时长；
- *   · 超过 20 秒算"还在玩"；
+ *   · 至少 20 秒算"还在玩"；
  *   · 放着音乐不动（清单里加了音乐应用）不算；
  *   · 读不到使用情况 → **照样锁**（未授权的人正是最需要被拦的）。
  *
- * 已知盲区：手机放客厅、人在刷平板 → 检测不到；
- * 一直停在同一个页面不动 → 时间线不刷新，可能被判成已放下。
+ * 只统计本机系统提供的使用记录，不覆盖其他设备。
  */
 class IntentAlarmReceiver : BroadcastReceiver() {
 
@@ -71,6 +70,10 @@ class IntentAlarmReceiver : BroadcastReceiver() {
         val title = record.optString("title", "去做事")
         val lockMinutes = record.optInt("lockMinutes", 20)
         val createdAt = record.optLong("createdAt", 0L)
+        val now = System.currentTimeMillis()
+        val checkAt = record.optLong("checkAt", now)
+        val expires = record.optLong("expireAt", Long.MAX_VALUE)
+        if (now >= expires) return JSONObject().put("locked", false).put("message", "约定已过期，这次不锁")
 
         val allowedPackages = record.optJSONArray("allowPackages") ?: JSONArray()
         val allowPkgs = HashSet<String>()
@@ -85,7 +88,7 @@ class IntentAlarmReceiver : BroadcastReceiver() {
         // 原生判不了，如实退回给网页侧在下次打开时纠正。
         allowPkgs.remove(FLOAT_PACKAGE_NAME)
 
-        val usedSeconds = measureUsageSeconds(context, createdAt, allowPkgs)
+        val usedSeconds = measureUsageSeconds(context, createdAt, minOf(now, checkAt + 60_000L), allowPkgs)
 
         // 使用记录读不到（未授权）：照样锁。理由见类注释。
         if (usedSeconds < 0) {
@@ -114,14 +117,13 @@ class IntentAlarmReceiver : BroadcastReceiver() {
      * 用 UsageEvents 逐段求交而不是 queryUsageStats 累计：
      * 后者只能给"今天某应用共用了多久"，回答不了"从我说完到现在他动了多久"。
      */
-    private fun measureUsageSeconds(context: Context, since: Long, allowedPackages: Set<String>): Long {
+    private fun measureUsageSeconds(context: Context, since: Long, now: Long, allowedPackages: Set<String>): Long {
         if (!hasUsageAccess(context)) return -1L
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return -1L
-        val now = System.currentTimeMillis()
         if (since <= 0L || now <= since) return 0L
 
         return try {
-            val events = usm.queryEvents(since, now)
+            val events = usm.queryEvents((since - 24 * 60 * 60_000L).coerceAtLeast(0L), now) ?: return -1L
             val event = UsageEvents.Event()
             var lastStart = 0L
             var lastPackage = ""
@@ -131,7 +133,7 @@ class IntentAlarmReceiver : BroadcastReceiver() {
             fun settle(pkg: String, start: Long, end: Long) {
                 if (pkg.isBlank() || start <= 0L || end <= start) return
                 if (allowedPackages.contains(pkg)) return
-                total += (end - start) / 1000
+                total += ((end - maxOf(start, since)).coerceAtLeast(0L))
             }
 
             while (events.hasNextEvent()) {
@@ -143,7 +145,7 @@ class IntentAlarmReceiver : BroadcastReceiver() {
                     || type == UsageEvents.Event.ACTIVITY_PAUSED
                 if (!isForeground && !isBackground) continue
 
-                if (isBackground && lastWasForeground) {
+                if (isBackground && lastWasForeground && event.packageName == lastPackage) {
                     settle(lastPackage, lastStart, event.timeStamp)
                     lastWasForeground = false
                     lastStart = 0L
@@ -156,7 +158,7 @@ class IntentAlarmReceiver : BroadcastReceiver() {
             }
             // 当前仍在前台的那一段算到此刻
             if (lastWasForeground) settle(lastPackage, lastStart, now)
-            total
+            total / 1000L
         } catch (t: Throwable) {
             -1L
         }
