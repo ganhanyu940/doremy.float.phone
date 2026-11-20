@@ -33,6 +33,7 @@ import {
   type LaunchableApp,
 } from "@/lib/phone-lock";
 import { isShellEnvironment as isShell } from "@/lib/shell-call-overlay";
+import { listInnerFocusApps, readInnerFocusRule, saveInnerFocusRule } from "@/lib/inner-focus";
 
 export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => void }) {
   const [config, setConfig] = useState<PhoneLockConfig>(() => loadPhoneLockConfig());
@@ -40,12 +41,17 @@ export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => v
   const [statusText, setStatusText] = useState("");
   const [focus, setFocus] = useState<FocusRule | null>(() => readFocusState());
   const [focusQuery, setFocusQuery] = useState('');
+  const [innerIds, setInnerIds] = useState(() => readInnerFocusRule()?.ids ?? []);
+  const innerApps = listInnerFocusApps();
   const saveFocus = (enabled: boolean) => {
     if (!focus) return;
-    if (enabled && (!focus.packages.length || focus.start === focus.end)) { onNotice?.('请先选要管的应用，并设置不同的开始和结束时间'); return; }
-    const next = { ...focus, enabled, until: enabled && focus.until <= Date.now() ? Date.now() + 28 * 86_400_000 : focus.until };
+    const ids = innerIds.filter(id => innerApps.some(app => app.id === id));
+    if (enabled && ((!focus.packages.length && !ids.length) || focus.start === focus.end)) { onNotice?.('请先选要管的应用，并设置不同的开始和结束时间'); return; }
+    const next = { ...focus, enabled: enabled && focus.packages.length > 0, until: enabled && focus.until <= Date.now() ? Date.now() + 28 * 86_400_000 : focus.until };
     if (!saveFocusRule(next)) { onNotice?.('没有保存成功，请确认新壳和无障碍服务已就绪'); return; }
-    setFocus(readFocusState() ?? next);
+    const saved = readFocusState() ?? next;
+    setFocus(saved);
+    saveInnerFocusRule({ ids: enabled ? ids : [], start: saved.start, end: saved.end, until: saved.until });
     onNotice?.(enabled ? '考前陪管已保存' : '考前陪管已关闭');
   };
   const clock = (n: number) => `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
@@ -191,17 +197,24 @@ export function DeviceLockSettings({ onNotice }: { onNotice?: (msg: string) => v
               <label>开始 <input type="time" value={clock(focus.start)} onChange={e => { if (e.target.value) setFocus({ ...focus, start: fromClock(e.target.value) }); }} /></label>
               <label>结束 <input type="time" value={clock(focus.end)} onChange={e => { if (e.target.value) setFocus({ ...focus, end: fromClock(e.target.value) }); }} /></label>
             </div>
-            <p>已选 {focus.packages.length} 个。首次开启起 28 天结束。</p>
+            <p>安卓应用已选 {focus.packages.length} 个，小手机内应用已选 {innerIds.length} 个。首次开启起 28 天结束。</p>
             <input type="search" aria-label="搜索应用" placeholder="搜索要拦截的应用" value={focusQuery} onChange={e => setFocusQuery(e.target.value)} />
             <div style={{ maxHeight: 220, overflowY: 'auto' }}>
               {apps.filter(app => !focusQuery.trim() || `${app.label} ${app.package}`.toLowerCase().includes(focusQuery.trim().toLowerCase())).map(app => <label key={app.package} style={{ display: 'block', padding: '6px 0' }}>
                 <input type="checkbox" checked={focus.packages.includes(app.package)} onChange={e => setFocus({ ...focus, packages: e.target.checked ? [...focus.packages, app.package] : focus.packages.filter(pkg => pkg !== app.package) })} /> {app.label}
               </label>)}
             </div>
+            <h4>小手机内应用</h4>
+            <p>和安卓应用共用学习时段。只暂停你勾选的应用；设置、锁机台和「查手机」学习名单内的应用不受影响。</p>
+            <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+              {innerApps.filter(app => app.label.toLowerCase().includes(focusQuery.trim().toLowerCase())).map(app => <label key={app.id} style={{ display: 'block', padding: '6px 0' }}>
+                <input type="checkbox" checked={innerIds.includes(app.id)} onChange={e => setInnerIds(ids => e.target.checked ? [...ids, app.id] : ids.filter(id => id !== app.id))} /> {app.label}
+              </label>)}
+            </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-              <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(true)}>{focus.enabled && focus.until > Date.now() ? '保存规则' : '保存并开启'}</button>
-              {focus.enabled && <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(false)}>关闭陪管</button>}
-              <button type="button" className="ui-btn ui-btn-outline" onClick={() => { refresh(); setFocus(readFocusState()); }}>读取已保存规则</button>
+              <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(true)}>{(focus.enabled || readInnerFocusRule()?.ids.length) && focus.until > Date.now() ? '保存规则' : '保存并开启'}</button>
+              {(focus.enabled || Boolean(readInnerFocusRule()?.ids.length)) && <button type="button" className="ui-btn ui-btn-outline" onClick={() => saveFocus(false)}>关闭陪管</button>}
+              <button type="button" className="ui-btn ui-btn-outline" onClick={() => { refresh(); setFocus(readFocusState()); setInnerIds(readInnerFocusRule()?.ids ?? []); }}>读取已保存规则</button>
             </div>
           </div>}
         </div>

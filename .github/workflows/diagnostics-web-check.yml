@@ -13,6 +13,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "components/desktop-shell.tsx"
+      - "components/device-lock/**"
+      - "lib/inner-focus.ts"
       - "components/settings/runtime-diagnostics.tsx"
       - "components/phone-settings-app.tsx"
       - "lib/qa-error-log.ts"

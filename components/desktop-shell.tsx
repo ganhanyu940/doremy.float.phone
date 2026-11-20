@@ -63,6 +63,7 @@ import { hydrateSettingsDb } from "@/lib/settings-db";
 import { hydrateDwellingStorage } from "@/lib/dwelling-storage";
 import { hydrateCheckPhoneStorage } from "@/lib/checkphone-storage";
 import { recordInnerAppOpen } from "@/lib/phone-check";
+import { useInnerFocus } from "@/components/device-lock/use-inner-focus";
 import {
   DOCK_DEFAULT,
   ICONS,
@@ -4253,16 +4254,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
    * 应用市场、深链跳转等多个入口打开，逐个去埋必然漏。盯状态最省事也不会漏。
    * 回桌面（activeApp 为空）不记录——那不是「用某个 APP」。
    */
+  const activeInnerLabel = activeApp ? getCustomAppForIcon(activeApp)?.name || getDesktopIconMeta(activeApp)?.label || "" : "";
+  const innerFocusUntil = useInnerFocus(activeApp, activeInnerLabel, setNotice);
   useEffect(() => {
-    if (!activeApp) return;
-    try {
-      const customApp = getCustomAppForIcon(activeApp);
-      const label = customApp?.name || getDesktopIconMeta(activeApp)?.label || "";
-      if (label) recordInnerAppOpen(label);
-    } catch {
-      // 记录失败不影响任何功能，静默跳过
-    }
-  }, [activeApp, getCustomAppForIcon]);
+    if (activeApp && activeInnerLabel && !innerFocusUntil) recordInnerAppOpen(activeInnerLabel);
+  }, [activeApp, activeInnerLabel, innerFocusUntil]);
 
   function closeCustomAppRunner(app: InstalledCustomApp): void {
     const launchState = customAppLaunchContext?.appId === app.id ? customAppLaunchContext : null;
@@ -5232,6 +5228,12 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                       ))}
                     </div>
                   </>
+                ) : innerFocusUntil ? (
+                  <section className="phone-app-pane" style={{ padding: 24 }} aria-label="考前陪管">
+                    <h2>「{activeInnerLabel}」已暂停使用</h2>
+                    <p>最晚 {new Date(innerFocusUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 恢复，离开学习时段也会放行。你可以回桌面打开学习应用。</p>
+                    <button type="button" className="ui-btn ui-btn-primary" onClick={() => setActiveApp(null)}>回桌面</button>
+                  </section>
                 ) : (
                   <>
                     <section className="phone-app-pane" style={activeApp === "dwelling" || activeApp === "xiaohongshu" || activeApp === "shopping" ? { display: "none" } : undefined}>
@@ -5250,11 +5252,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                   </>
                 )}
                 {xiaohongshuMounted && (
-                  <section className="phone-app-pane" style={activeApp !== "xiaohongshu" ? { display: "none" } : undefined}>
+                  <section className="phone-app-pane" style={activeApp !== "xiaohongshu" || innerFocusUntil ? { display: "none" } : undefined}>
                     <XiaohongshuApp
                       onClose={handleCloseXiaohongshu}
                       onNotice={setNotice}
-                      visible={activeApp === "xiaohongshu"}
+                      visible={activeApp === "xiaohongshu" && !innerFocusUntil}
                       onBusyChange={setXiaohongshuBusy}
                       onIdle={() => {
                         if (activeApp !== "xiaohongshu") {
@@ -5266,10 +5268,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
                   </section>
                 )}
                 {shoppingMounted && (
-                  <section className="phone-app-pane" style={activeApp !== "shopping" ? { display: "none" } : undefined}>
+                  <section className="phone-app-pane" style={activeApp !== "shopping" || innerFocusUntil ? { display: "none" } : undefined}>
                     <ShoppingApp
                       onClose={handleCloseShopping}
-                      visible={activeApp === "shopping"}
+                      visible={activeApp === "shopping" && !innerFocusUntil}
                       onBusyChange={setShoppingBusy}
                       onIdle={() => {
                         if (activeApp !== "shopping") {
