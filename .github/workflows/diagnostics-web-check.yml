@@ -13,6 +13,8 @@ on:
   push:
     branches: [main]
     paths:
+      - "components/chat/chat-room.tsx"
+      - "components/chat/offline-favorites.tsx"
       - "components/desktop-shell.tsx"
       - "components/device-lock/**"
       - "lib/inner-focus.ts"

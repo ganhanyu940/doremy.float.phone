@@ -16,6 +16,7 @@ import { isKnownStickerLabel } from "@/lib/sticker-data";
 import { translateReasoningText } from "@/lib/reasoning-translate";
 import { MessageBubble, MediaDetailModal, prewarmStickerCache, BilingualTextBlock, isStandaloneHtmlPreviewContent, normalizeTextBubbleContent } from "./message-bubble";
 import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
+import { OfflineFavorites, OfflineFavoriteButton } from "./offline-favorites";
 import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal } from "./rich-input-modals";
 import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
@@ -6309,7 +6310,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                 }}
             >
                 {offlineMode && (
-                    <div className="chat-offline-body">
+                    <OfflineFavorites key={session.id} sessionId={session.id} onNotice={showChatToast}>
                         {offlineTurns.length === 0 && !pendingOfflineUserText ? (
                             <div className="chat-offline-empty">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0Z" /><circle cx="12" cy="10" r="3" /></svg>
@@ -6433,6 +6434,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                                             defaultExpanded={session.collapseBilingualTranslation !== false ? false : true}
                                         />
                                     </div>
+                                    <OfflineFavoriteButton id={turn.id} text={offlineDisplay.assistantContent} at={turn.createdAt} />
                                     {turn.summary.trim() && (
                                         <details className="chat-offline-summary-fold">
                                             <summary>摘要（{turn.summaryTag || "summary"}）</summary>
@@ -6488,7 +6490,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                                 )}
                             </div>
                         )}
-                    </div>
+                    </OfflineFavorites>
                 )}
                 {!offlineMode && hasMore && (
                     <button
