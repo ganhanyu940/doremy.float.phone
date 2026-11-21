@@ -16,7 +16,7 @@ import { isKnownStickerLabel } from "@/lib/sticker-data";
 import { translateReasoningText } from "@/lib/reasoning-translate";
 import { MessageBubble, MediaDetailModal, prewarmStickerCache, BilingualTextBlock, isStandaloneHtmlPreviewContent, normalizeTextBubbleContent } from "./message-bubble";
 import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
-import { OfflineFavorites, OfflineFavoriteButton } from "./offline-favorites";
+import { OfflineFavorites, OfflineFavoriteMenuItem } from "./offline-favorites";
 import { PhotoInputModal, TextPhotoModal, VoiceRecordModal, RedPacketModal, LocationInputModal, SystemInstructionModal } from "./rich-input-modals";
 import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
@@ -5469,7 +5469,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
         });
     };
 
-    const renderOfflineContextMenu = (turn: ChatOfflineTurn, role: OfflineActionTarget["role"]) => {
+    const renderOfflineContextMenu = (turn: ChatOfflineTurn, role: OfflineActionTarget["role"], text: string) => {
         const menu = (
             <div
                 onPointerDown={e => e.stopPropagation()}
@@ -5481,9 +5481,10 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                 <div className="flex">
                     <button onClick={() => { copyTextToClipboard(getOfflineCopyText(turn, role)); setActiveOfflineTarget(null); }} className="ctx-menu-btn">复制</button>
                     <button onClick={() => handleOfflineEditStart(turn, role)} className="ctx-menu-btn">编辑</button>
-                    <button onClick={() => void handleOfflineRetryFrom(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
+                    <OfflineFavoriteMenuItem id={role === "assistant" ? turn.id : `user:${turn.id}`} text={text} at={turn.createdAt} />
                 </div>
                 <div className="flex">
+                    <button onClick={() => void handleOfflineRetryFrom(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
                     <button onClick={() => handleOfflineDeleteTurn(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">删除</button>
                     <button onClick={() => handleOfflineDeleteTurnsFrom(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">删除以下</button>
                 </div>
@@ -6360,7 +6361,7 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                                         onContextMenu={(e) => { e.preventDefault(); openOfflineContextMenu({ turnId: turn.id, role: "user" }, { x: e.clientX, y: e.clientY }); }}
                                         {...(activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "user" ? { "data-active": "" } : {})}
                                     >
-                                        {activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "user" && renderOfflineContextMenu(turn, "user")}
+                                        {activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "user" && renderOfflineContextMenu(turn, "user", offlineDisplay.userContent)}
                                         <BilingualTextBlock
                                             text={offlineDisplay.userContent}
                                             mode="markdown"
@@ -6428,13 +6429,12 @@ export function ChatRoom({ session, onBack, onDeleted, isActive = true }: ChatRo
                                         onContextMenu={(e) => { e.preventDefault(); openOfflineContextMenu({ turnId: turn.id, role: "assistant" }, { x: e.clientX, y: e.clientY }); }}
                                         {...(activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "assistant" ? { "data-active": "" } : {})}
                                     >
-                                        {activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "assistant" && renderOfflineContextMenu(turn, "assistant")}
+                                        {activeOfflineTarget?.turnId === turn.id && activeOfflineTarget.role === "assistant" && renderOfflineContextMenu(turn, "assistant", offlineDisplay.assistantContent)}
                                         <OfflineAssistantTextBlock
                                             text={offlineDisplay.assistantContent}
                                             defaultExpanded={session.collapseBilingualTranslation !== false ? false : true}
                                         />
                                     </div>
-                                    <OfflineFavoriteButton id={turn.id} text={offlineDisplay.assistantContent} at={turn.createdAt} />
                                     {turn.summary.trim() && (
                                         <details className="chat-offline-summary-fold">
                                             <summary>摘要（{turn.summaryTag || "summary"}）</summary>

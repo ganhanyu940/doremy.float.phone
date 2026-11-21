@@ -52,7 +52,7 @@ export function OfflineFavorites({ sessionId, children, onNotice }: { sessionId:
                         <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", userSelect: "text" }}>{row.text}</div>
                         <button type="button" className="ui-btn ui-btn-outline" disabled={busy} onClick={() => void change(row)}>取消收藏</button>
                     </details>)}
-                    {!rows.length && <p>还没有收藏。点线下回复下方的「收藏」即可保存正文。</p>}
+                    {!rows.length && <p>还没有收藏。长按线下消息，再点「收藏」即可保存正文。</p>}
                     {rows.length > 0 && !rows.some(row => row.text.toLowerCase().includes(query.trim().toLowerCase())) && <p>没有匹配的收藏。</p>}
                 </section>}
             </div>
@@ -61,11 +61,11 @@ export function OfflineFavorites({ sessionId, children, onNotice }: { sessionId:
     </Shelf.Provider>;
 }
 
-export function OfflineFavoriteButton({ id, text, at }: Favorite) {
+export function OfflineFavoriteMenuItem({ id, text, at }: Favorite) {
     const shelf = useContext(Shelf);
     if (!shelf || !text.trim()) return null;
     const saved = shelf.rows.some(row => row.id === id);
-    return <button type="button" className="ui-btn ui-btn-outline" aria-pressed={saved} disabled={shelf.busy || saved} onClick={() => void shelf.change({ id, text, at })}>
-        {saved ? "★ 已收藏" : "☆ 收藏"}
+    return <button type="button" className="ctx-menu-btn" disabled={shelf.busy} onClick={() => void shelf.change({ id, text, at })}>
+        {saved ? "取消收藏" : "收藏"}
     </button>;
 }
